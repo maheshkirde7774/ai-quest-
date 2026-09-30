@@ -7,3 +7,5 @@ Flask-SocketIO>=5.3,<6.0
 qrcode[pil]>=7.4,<9.0
 psycopg[binary]>=3.2,<4.0
 python-dotenv>=1.0,<2.0
+gunicorn>=22.0.0
+eventlet>=0.35.0
