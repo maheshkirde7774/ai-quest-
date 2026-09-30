@@ -65,7 +65,7 @@
   };
   async function submitQuiz(selected_answer){clearInterval(quizInterval);if(!activeQuiz)return;try{const result=await api(`/api/team/quiz/${activeQuiz.answer_id}/submit`,{method:'POST',body:JSON.stringify({selected_answer})});document.getElementById('quiz-box').innerHTML=`<b>${result.expired?'Time expired.':result.correct?'Correct answer.':'Answer recorded.'}</b><p>${result.points} points</p>`;activeQuiz=null;refresh();}catch(error){toast(error.message,true);}}
   document.getElementById('complete-round').onclick=async()=>{if(!confirm('Finish your current round? You cannot restart it.'))return;try{await api(`/api/team/rounds/${summary.round_id}/complete`,{method:'POST',body:'{}'});toast('Round completed');refresh();}catch(error){toast(error.message,true);}};
-  if(window.io){const socket=io();socket.emit('join_participant');socket.on('leaderboard',refreshLeaderboard);}
+  if(window.io){const socket=io();socket.emit('join_participant');socket.on('leaderboard',refreshLeaderboard);socket.on('leaderboard_update',refreshLeaderboard);}
   refresh();setInterval(refresh,20000);
   const scan=new URLSearchParams(location.search).get('scan');if(scan){history.replaceState({},'',location.pathname);setTimeout(()=>submitToken(scan),500);}
 })();

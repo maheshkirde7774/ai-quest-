@@ -6,12 +6,14 @@ BASE_DIR = Path(__file__).resolve().parent
 
 class Config:
     SECRET_KEY = os.getenv("SECRET_KEY", "local-development-key-change-before-deployment")
-    SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL") or f"sqlite:///{BASE_DIR / 'database.db'}"
-    if SQLALCHEMY_DATABASE_URI.startswith("postgres://"):
-        SQLALCHEMY_DATABASE_URI = SQLALCHEMY_DATABASE_URI.replace("postgres://", "postgresql+psycopg2://", 1)
-    elif SQLALCHEMY_DATABASE_URI.startswith("postgresql://"):
+    SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL")
+    if SQLALCHEMY_DATABASE_URI and SQLALCHEMY_DATABASE_URI.startswith("postgres://"):
         SQLALCHEMY_DATABASE_URI = SQLALCHEMY_DATABASE_URI.replace(
-            "postgresql://", "postgresql+psycopg2://", 1
+            "postgres://", "postgresql+psycopg://", 1
+        )
+    elif SQLALCHEMY_DATABASE_URI and SQLALCHEMY_DATABASE_URI.startswith("postgresql://"):
+        SQLALCHEMY_DATABASE_URI = SQLALCHEMY_DATABASE_URI.replace(
+            "postgresql://", "postgresql+psycopg://", 1
         )
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     SESSION_COOKIE_HTTPONLY = True
@@ -30,5 +32,7 @@ class Config:
                 raise RuntimeError("Set a random SECRET_KEY of at least 32 characters in production.")
             if os.getenv("COOKIE_SECURE", "false").lower() != "true":
                 raise RuntimeError("Set COOKIE_SECURE=true when deployed behind HTTPS.")
-            if not os.getenv("DATABASE_URL", "").startswith(("postgresql://", "postgresql+psycopg://")):
+            if not os.getenv("DATABASE_URL", "").startswith(
+                ("postgresql://", "postgresql+psycopg://", "postgresql+psycopg2://")
+            ):
                 raise RuntimeError("Production must use PostgreSQL via DATABASE_URL.")

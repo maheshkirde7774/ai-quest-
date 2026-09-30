@@ -4,6 +4,7 @@ from datetime import timedelta
 from app import create_app
 from extensions import db
 from models import Answer, Admin, FinalResult, QRChallenge, Round, RoundSession, Score, Team, TeamMember, utcnow
+from utils.scoring import leaderboard_rows
 
 
 class EventAppTests(unittest.TestCase):
@@ -153,6 +154,33 @@ class EventAppTests(unittest.TestCase):
         self.assertEqual(self.client.post("/api/results/generate", json={}).status_code, 409)
         with self.app.app_context():
             self.assertEqual(FinalResult.query.filter_by(locked=True).count(), 3)
+
+    def test_leaderboard_tiebreak_uses_completion_time(self):
+        with self.app.app_context():
+            base = utcnow()
+            team_1 = Team(team_id="AIQ-010", team_name="Later Finish", status="ACTIVE")
+            team_1.set_pin("123456")
+            team_2 = Team(team_id="AIQ-011", team_name="Earlier Finish", status="ACTIVE")
+            team_2.set_pin("123456")
+            db.session.add_all([team_1, team_2])
+            db.session.flush()
+            db.session.add_all([
+                Score(team_id=team_1.id, round_id=1, points=50),
+                Score(team_id=team_1.id, round_id=2, points=30),
+                Score(team_id=team_2.id, round_id=1, points=50),
+                Score(team_id=team_2.id, round_id=2, points=30),
+                RoundSession(team_id=team_1.id, round_id=1, status="COMPLETED", started_at=base, ended_at=base + timedelta(seconds=120)),
+                RoundSession(team_id=team_1.id, round_id=2, status="COMPLETED", started_at=base + timedelta(seconds=200), ended_at=base + timedelta(seconds=380)),
+                RoundSession(team_id=team_2.id, round_id=1, status="COMPLETED", started_at=base + timedelta(seconds=10), ended_at=base + timedelta(seconds=130)),
+                RoundSession(team_id=team_2.id, round_id=2, status="COMPLETED", started_at=base + timedelta(seconds=170), ended_at=base + timedelta(seconds=350)),
+            ])
+            db.session.commit()
+        with self.app.app_context():
+            rows = leaderboard_rows()
+        self.assertEqual([row["team_id"] for row in rows], ["AIQ-011", "AIQ-010"])
+        self.assertEqual(rows[0]["rank"], 1)
+        self.assertEqual(rows[1]["rank"], 2)
+        self.assertEqual(rows[0]["time"], 300)
 
     def test_quiz_attempt_expires_even_without_browser_submission(self):
         self.login_admin()

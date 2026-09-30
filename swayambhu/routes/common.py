@@ -61,4 +61,6 @@ def emit_activity(message, category="event"):
 def emit_leaderboard():
     from utils.scoring import leaderboard_rows
 
-    socketio.emit("leaderboard", leaderboard_rows(), room="participants")
+    payload = leaderboard_rows()
+    socketio.emit("leaderboard", payload, room="participants")
+    socketio.emit("leaderboard_update", payload, room="participants")
