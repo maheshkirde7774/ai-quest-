@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#11172c"><title>Admin access · SWAYAMBHU 2026</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
+</head>
+<body class="login-page">
+  <main class="login-shell">
+    <div class="login-brand"><span class="brand-mark">S<span>.</span></span><span>SWAYAMBHU <b>2026</b></span></div>
+    <p class="eyebrow">TECHNICAL FESTIVAL · AI & DATA SCIENCE</p>
+    <h1>Command<br><span>the quest.</span></h1>
+    <p class="login-copy">Event operations console</p>
+    {% with messages = get_flashed_messages(with_categories=true) %}{% for category, message in messages %}<div class="notice error">{{ message }}</div>{% endfor %}{% endwith %}
+    <form method="post" class="login-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label>Username<input name="username" autocomplete="username" required autofocus></label>
+      <label>Password<input type="password" name="password" autocomplete="current-password" required></label>
+      <button class="button primary wide" type="submit">Sign in <span aria-hidden="true">↗</span></button>
+    </form>
+    <a class="quiet-link" href="{{ url_for('auth.team_login') }}">Team access <span>→</span></a>
+    <div class="login-foot"><span class="live-dot"></span> CONTROL ROOM · PRIVATE ACCESS</div>
+  </main>
+  <div class="login-art" aria-hidden="true"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="art-core">AI<br><small>QR QUEST</small></div><div class="art-coordinate">17° 23′ N<br>78° 29′ E</div></div>
+</body>
+</html>
