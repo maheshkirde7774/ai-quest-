@@ -24,28 +24,29 @@ def control_round(round_id, action):
     event_round = db.session.get(Round, round_id)
     if not event_round:
         return jsonify(error="Round not found."), 404
+    from services.event import event_config
+    event = event_config()
+    if event.results_locked:
+        return jsonify(error="Results are locked."), 409
     active = Round.query.filter_by(status="ACTIVE").first()
-    if action == "start":
-        if active and active.id != event_round.id:
-            return jsonify(error=f"Round {active.number} is already active."), 409
-        if event_round.status not in ("READY", "ACTIVE"):
+    if action in ("start", "resume"):
+        if event_round.status not in ("READY", "ACTIVE", "PAUSED"):
             return jsonify(error="Unlock this round before starting it."), 409
+        was_paused = event_round.status == "PAUSED"
+        event.active = True
         event_round.status = "ACTIVE"
         event_round.started_at = event_round.started_at or utcnow()
-        label = "started"
+        label = "resumed" if action == "resume" or was_paused else "started"
     elif action == "pause":
         if event_round.status != "ACTIVE":
             return jsonify(error="Only an active round can be paused."), 409
-        event_round.status = "READY"
+        event_round.status = "PAUSED"
         label = "paused"
     elif action == "end":
-        if event_round.status != "ACTIVE":
-            return jsonify(error="Only an active round can be ended."), 409
-        event_round.status = "COMPLETED"
+        if event_round.status not in ("ACTIVE", "PAUSED"):
+            return jsonify(error="Only an active or paused round can be ended."), 409
+        event_round.status = "ENDED"
         event_round.ended_at = utcnow()
-        for session in RoundSession.query.filter_by(round_id=event_round.id, status="ACTIVE"):
-            session.ended_at = event_round.ended_at
-            session.status = "COMPLETED"
         next_round = Round.query.filter_by(number=event_round.number + 1).first()
         if next_round and next_round.status == "LOCKED":
             next_round.status = "READY"
@@ -53,9 +54,6 @@ def control_round(round_id, action):
     elif action == "unlock":
         if event_round.status != "LOCKED":
             return jsonify(error="Only a locked round can be unlocked."), 409
-        previous = Round.query.filter_by(number=event_round.number - 1).first()
-        if event_round.number > 1 and (not previous or previous.status != "COMPLETED"):
-            return jsonify(error="Complete the previous round first."), 409
         event_round.status = "READY"
         label = "unlocked"
     else:
@@ -70,18 +68,4 @@ def control_round(round_id, action):
 @rounds_bp.post("/api/team/rounds/<int:round_id>/complete")
 @team_required
 def complete_team_round(round_id):
-    event_round = db.session.get(Round, round_id)
-    session = RoundSession.query.filter_by(
-        team_id=current_user.id, round_id=round_id, status="ACTIVE"
-    ).first()
-    if not event_round or event_round.status != "ACTIVE" or not session:
-        return jsonify(error="No active team session for this round."), 409
-    session.ended_at = utcnow()
-    session.status = "COMPLETED"
-    if event_round.number == 3:
-        current_user.status = "COMPLETED"
-    audit("Team round completed", current_user.team_id, {"round": event_round.number})
-    db.session.commit()
-    emit_activity(f"{current_user.team_id} completed Round {event_round.number}", "round")
-    emit_leaderboard()
-    return jsonify(completed_at=iso_utc(session.ended_at))
+    return jsonify(error="Round completion is recorded automatically after the challenge."), 409

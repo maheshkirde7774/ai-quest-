@@ -34,7 +34,8 @@ def overview():
         completed_teams=Team.query.filter_by(status="COMPLETED").count(),
         current_round=active_round.name if active_round else "Not started",
         total_scans=ScanLog.query.count(),
-        completed_rounds=Round.query.filter_by(status="COMPLETED").count(),
+        teams_by_round={str(n): RoundSession.query.join(Round).filter(Round.number==n, RoundSession.status=="ACTIVE").count() for n in (1,2,3)},
+        completed_rounds=Round.query.filter_by(status="ENDED").count(),
         round_scores={
             str(round_number): int(points or 0)
             for round_number, points in db.session.query(

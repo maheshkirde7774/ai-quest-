@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 from sqlalchemy import func
+from sqlalchemy.orm import selectinload
 
 from extensions import db
 from models import Score, Team
@@ -26,10 +27,10 @@ def _completed_at(team):
 def leaderboard_rows():
     teams = db.session.query(Team).filter(
         Team.status.notin_(("DISQUALIFIED", "DISABLED"))
-    ).all()
+    ).options(selectinload(Team.scores), selectinload(Team.round_sessions)).all()
     rows = []
     for team in teams:
-        total_score = sum(score.points for score in team.scores)
+        total_score = sum(score.points for score in team.scores) + team.bonus - team.penalty
         total_time = sum(
             int((session.ended_at - session.started_at).total_seconds())
             for session in team.round_sessions

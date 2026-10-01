@@ -12,6 +12,7 @@ def utcnow():
 
 class Admin(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
+    active = db.Column(db.Boolean, nullable=False, default=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
     role = db.Column(db.String(20), nullable=False, default="admin")
@@ -38,6 +39,11 @@ class Team(UserMixin, db.Model):
     status = db.Column(db.String(20), nullable=False, default="READY", index=True)
     created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utcnow)
     role = "team"
+
+    state = db.Column(db.String(30), nullable=False, default="REGISTERED", index=True)
+    assigned_qr_id = db.Column(db.Integer, db.ForeignKey("qr_challenge.id"))
+    bonus = db.Column(db.Integer, nullable=False, default=0)
+    penalty = db.Column(db.Integer, nullable=False, default=0)
 
     scans = db.relationship("QRScan", back_populates="team", cascade="all, delete-orphan")
     answers = db.relationship("Answer", back_populates="team", cascade="all, delete-orphan")
@@ -102,6 +108,9 @@ class Question(db.Model):
     time_limit = db.Column(db.Integer, nullable=False, default=60)
     active = db.Column(db.Boolean, nullable=False, default=True)
 
+    kind = db.Column(db.String(30), nullable=False, default="MCQ")
+    position = db.Column(db.Integer, nullable=False, default=0)
+
     round = db.relationship("Round", back_populates="questions")
     answers = db.relationship("Answer", back_populates="question", cascade="all, delete-orphan")
 
@@ -114,12 +123,17 @@ class QRCode(db.Model):
     secure_token = db.Column(db.String(96), unique=True, nullable=False, index=True)
     round_id = db.Column(db.Integer, db.ForeignKey("round.id"), nullable=False, index=True)
     question_id = db.Column(db.Integer, db.ForeignKey("question.id"), index=True)
+    quiz_id = db.Column(db.Integer, db.ForeignKey("quiz.id"))
     room = db.Column(db.String(120), nullable=False, default="")
     status = db.Column(db.String(20), nullable=False, default="INACTIVE")
     created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utcnow)
     activated_at = db.Column(db.DateTime(timezone=True))
     deactivated_at = db.Column(db.DateTime(timezone=True))
     expires_at = db.Column(db.DateTime(timezone=True))
+
+    title = db.Column(db.String(120), nullable=False, default="")
+    clue = db.Column(db.Text, nullable=False, default="")
+    updated_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
 
     round = db.relationship("Round", back_populates="challenges")
     question = db.relationship("Question")
@@ -130,8 +144,8 @@ class QRScan(db.Model):
     __tablename__ = "scan_log"
 
     id = db.Column(db.Integer, primary_key=True)
-    team_id = db.Column(db.Integer, db.ForeignKey("team.id", ondelete="CASCADE"), nullable=False, index=True)
-    qr_id = db.Column(db.Integer, db.ForeignKey("qr_challenge.id", ondelete="RESTRICT"), nullable=False, index=True)
+    team_id = db.Column(db.Integer, db.ForeignKey("team.id"), nullable=False, index=True)
+    qr_id = db.Column(db.Integer, db.ForeignKey("qr_challenge.id"), nullable=False, index=True)
     round_id = db.Column(db.Integer, db.ForeignKey("round.id"), nullable=False, index=True)
     scan_time = db.Column(db.DateTime(timezone=True), nullable=False, default=utcnow)
     answer_time = db.Column(db.DateTime(timezone=True))
@@ -195,6 +209,9 @@ class ActivityLog(db.Model):
     metadata_json = db.Column(db.JSON, nullable=False, default=dict)
     timestamp = db.Column(db.DateTime(timezone=True), nullable=False, default=utcnow, index=True)
 
+    team_id = db.Column(db.Integer, db.ForeignKey("team.id"), index=True)
+    request_id = db.Column(db.String(36))
+
     admin = db.relationship("Admin")
 
 
@@ -214,3 +231,117 @@ class FinalResult(db.Model):
 # Preserve the names used by the existing routes and integrations.
 QRChallenge = QRCode
 ScanLog = QRScan
+
+
+class Event(db.Model):
+    """One event per database; this row also serializes event mutations."""
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(120), nullable=False, default="Swayambhu 2026")
+    mode = db.Column(db.String(20), nullable=False, default="TEST")
+    active = db.Column(db.Boolean, nullable=False, default=False)
+    results_published = db.Column(db.Boolean, nullable=False, default=False)
+    results_locked = db.Column(db.Boolean, nullable=False, default=False)
+    leaderboard_visible = db.Column(db.Boolean, nullable=False, default=False)
+    final_question_count = db.Column(db.Integer, nullable=False, default=10)
+    round_1_points = db.Column(db.Integer, nullable=False, default=0)
+    round_3_destination = db.Column(db.String(300), nullable=False, default="Contact the coordinator for your desktop station.")
+    version = db.Column(db.Integer, nullable=False, default=0)
+
+
+class QRScanEvent(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    team_id = db.Column(db.Integer, db.ForeignKey("team.id"), index=True)
+    qr_id = db.Column(db.Integer, db.ForeignKey("qr_challenge.id"), index=True)
+    round_id = db.Column(db.Integer, db.ForeignKey("round.id"), index=True)
+    timestamp = db.Column(db.DateTime(timezone=True), nullable=False, default=utcnow, index=True)
+    status = db.Column(db.String(30), nullable=False, index=True)
+    ip_address = db.Column(db.String(45), nullable=False, default="")
+    user_agent = db.Column(db.String(300), nullable=False, default="")
+    team = db.relationship("Team")
+    qr = db.relationship("QRCode")
+
+
+class Quiz(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    title = db.Column(db.String(120), nullable=False)
+    active = db.Column(db.Boolean, nullable=False, default=True)
+    questions = db.relationship("QuizQuestion", order_by="QuizQuestion.position", cascade="all, delete-orphan")
+
+
+class QuizQuestion(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    quiz_id = db.Column(db.Integer, db.ForeignKey("quiz.id"), nullable=False, index=True)
+    question_id = db.Column(db.Integer, db.ForeignKey("question.id"), nullable=False)
+    position = db.Column(db.Integer, nullable=False)
+    question = db.relationship("Question")
+    __table_args__ = (db.UniqueConstraint("quiz_id", "position"), db.UniqueConstraint("quiz_id", "question_id"))
+
+
+class QuizAttempt(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    team_id = db.Column(db.Integer, db.ForeignKey("team.id"), nullable=False, unique=True)
+    quiz_id = db.Column(db.Integer, db.ForeignKey("quiz.id"), nullable=False)
+    started_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utcnow)
+    submitted_at = db.Column(db.DateTime(timezone=True))
+    assignments = db.Column(db.JSON, nullable=False)  # Immutable server-side question snapshots.
+    score = db.Column(db.Integer)
+
+
+class Desktop(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(80), nullable=False, unique=True)
+    qr_id = db.Column(db.Integer, db.ForeignKey("qr_challenge.id"), nullable=False, unique=True)
+    password_hash = db.Column(db.String(255), nullable=False)
+    active = db.Column(db.Boolean, nullable=False, default=True)
+    qr = db.relationship("QRCode")
+
+    def set_password(self, value):
+        self.password_hash = generate_password_hash(value)
+
+
+class DesktopSession(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    desktop_id = db.Column(db.Integer, db.ForeignKey("desktop.id"), nullable=False, index=True)
+    team_id = db.Column(db.Integer, db.ForeignKey("team.id"), nullable=False, unique=True)
+    started_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utcnow)
+    password_attempts = db.Column(db.Integer, nullable=False, default=0)
+    password_solved = db.Column(db.Boolean, nullable=False, default=False)
+    final_challenge_unlocked = db.Column(db.Boolean, nullable=False, default=False)
+    completed_at = db.Column(db.DateTime(timezone=True))
+    desktop = db.relationship("Desktop")
+    team = db.relationship("Team")
+    __table_args__ = (db.CheckConstraint("password_attempts BETWEEN 0 AND 3", name="ck_password_attempt_cap"),)
+
+
+class PasswordAttempt(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    session_id = db.Column(db.Integer, db.ForeignKey("desktop_session.id"), nullable=False, index=True)
+    number = db.Column(db.Integer, nullable=False)
+    correct = db.Column(db.Boolean, nullable=False)
+    timestamp = db.Column(db.DateTime(timezone=True), nullable=False, default=utcnow)
+    __table_args__ = (db.UniqueConstraint("session_id", "number"), db.CheckConstraint("number BETWEEN 1 AND 3"))
+
+
+class FinalAssignment(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    team_id = db.Column(db.Integer, db.ForeignKey("team.id"), nullable=False, unique=True)
+    questions = db.Column(db.JSON, nullable=False)
+    started_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utcnow)
+    submitted_at = db.Column(db.DateTime(timezone=True))
+    reviewed = db.Column(db.Boolean, nullable=False, default=False)
+
+
+class FinalAnswer(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    assignment_id = db.Column(db.Integer, db.ForeignKey("final_assignment.id"), nullable=False, index=True)
+    question_id = db.Column(db.Integer, db.ForeignKey("question.id"), nullable=False)
+    answer = db.Column(db.Text, nullable=False)
+    timestamp = db.Column(db.DateTime(timezone=True), nullable=False, default=utcnow)
+    points = db.Column(db.Integer)
+    __table_args__ = (db.UniqueConstraint("assignment_id", "question_id"),)
+
+
+class RateBucket(db.Model):
+    key = db.Column(db.String(64), primary_key=True)
+    window = db.Column(db.Integer, nullable=False)
+    count = db.Column(db.Integer, nullable=False, default=0)

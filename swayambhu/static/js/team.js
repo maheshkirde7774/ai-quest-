@@ -1,71 +1,106 @@
 (() => {
   const csrf = document.querySelector('meta[name="csrf-token"]').content;
-  const toastRoot = document.getElementById('toast-root');
-  let summary, elapsedTimer, cameraControls, activeQuiz, quizInterval;
-  const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
-  const toast = (message,error=false) => {const node=document.createElement('div');node.className=`toast${error?' error':''}`;node.textContent=message;toastRoot.append(node);setTimeout(()=>node.remove(),4000);};
+  const $ = id => document.getElementById(id);
+  const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  let summary, cameraControls;
+  const toast = (message,error=false) => {const node=document.createElement('div');node.className=`toast${error?' error':''}`;node.textContent=message;$('toast-root').append(node);setTimeout(()=>node.remove(),6000);};
   async function api(path,options={}) {
-    const response=await fetch(path,{credentials:'same-origin',...options,headers:{'Content-Type':'application/json','X-CSRFToken':csrf,...(options.headers||{})}});
-    const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(data.error||`Request failed (${response.status})`);return data;
+    const response=await fetch(path,{credentials:'same-origin',...options,headers:{'Content-Type':'application/json','X-CSRFToken':csrf}});
+    if(response.redirected) { location.assign('/team/login'); throw new Error('Please sign in again.'); }
+    const value=await response.json();if(!response.ok)throw new Error(value.error||'Request failed');return value;
   }
-  const duration=seconds=>`${String(Math.floor(seconds/60)).padStart(2,'0')}:${String(seconds%60).padStart(2,'0')}`;
   async function refresh() {
     try {
       summary=await api('/api/team/dashboard');
-      document.getElementById('team-name').textContent=summary.team.team_name;
-      document.getElementById('team-id').textContent=`${summary.team.team_id} · ${[summary.team.member_1,summary.team.member_2,summary.team.member_3].filter(Boolean).join(' · ')}`;
-      document.getElementById('team-status').textContent=summary.team.status;
-      document.getElementById('team-score').textContent=summary.score;
-      document.getElementById('team-round').textContent=summary.current_round;
-      document.getElementById('team-round-status').textContent=summary.round_status;
-      const active=summary.round_status==='ACTIVE'&&summary.round_id;
-      document.getElementById('action-heading').textContent=active?`Round ${summary.round_number} is live.`:summary.team.status==='COMPLETED'?'Quest complete.':'Ready when you are.';
-      document.getElementById('action-copy').textContent=active?'Start your round timer, scan active QR clues, and submit answers here.':'Your event administrator controls when the next round opens.';
-      document.getElementById('start-round').hidden=!active||summary.session_active;
-      document.getElementById('scan-open').hidden=!(active&&summary.round_number===1&&summary.session_active);
-      document.getElementById('manual-scan').hidden=!(active&&summary.round_number===1&&summary.session_active);
-      document.getElementById('quiz-next').hidden=!(active&&summary.round_number===2&&summary.session_active);
-      document.getElementById('complete-round').hidden=!(active&&summary.session_active);
-      if(elapsedTimer)clearInterval(elapsedTimer);
-      const elapsed=document.getElementById('team-elapsed');
-      const updateElapsed=()=>elapsed.textContent=summary.round_started_at?duration(Math.floor((Date.now()-new Date(summary.round_started_at).getTime())/1000)):'00:00';
-      updateElapsed();elapsedTimer=setInterval(updateElapsed,1000);
-      const rounds=await api('/api/team/rounds');
-      document.getElementById('team-round-track').innerHTML=rounds.map(round=>`<div class="team-round-step ${round.status==='ACTIVE'?'active':round.status==='COMPLETED'?'done':''}"><strong>0${round.number} · ${esc(round.name)}</strong><small>${esc(round.status)}</small></div>`).join('');
-      await refreshLeaderboard();
+      $('team-name').textContent=summary.team.team_name;
+      $('team-id').textContent=summary.team.team_id;
+      $('team-status').textContent=summary.team.state.replaceAll('_',' ').toLowerCase().replace(/\b\w/g,c=>c.toUpperCase());
+      $('team-status').dataset.state=summary.team.state;
+      $('action-round').textContent=String(summary.round_number||3).padStart(2,'0');
+      $('event-status').textContent=summary.team.state==='COMPLETED'?'Quest completed':summary.round_status==='ACTIVE'?'Round open':summary.round_status==='PAUSED'?'Round paused':'Waiting for coordinator';
+      $('team-score').textContent=summary.score ?? 'Pending';
+      $('team-round').textContent=summary.current_round;
+      $('team-round-status').textContent=summary.round_status;
+      const active=summary.round_status==='ACTIVE';
+      $('start-round').hidden=!(active&&summary.round_number===1&&!summary.session_active);
+      const canScan=active && ['ROUND_1_ACTIVE','ROUND_1_COMPLETED','ROUND_2_COMPLETED'].includes(summary.team.state);
+      $('scan-open').hidden=!canScan;
+      $('scan-fallback').hidden=!canScan;
+      $('manual-scan').hidden=!active;
+      $('quiz-next').hidden=!['ROUND_2_ACTIVE','ROUND_2_COMPLETED'].includes(summary.team.state);
+      $('desktop-open').hidden=!summary.desktop_id;
+      $('desktop-open').href=summary.desktop_id?`/desktop/${summary.desktop_id}`:'#';
+      const instructions={REGISTERED:['Ready for your first clue?','Start Round 1, then scan the QR matching the number on your envelope.'],ROUND_1_ACTIVE:['Find your assigned QR.','Scan the QR matching the number on your envelope to reveal your clue.'],ROUND_1_COMPLETED:['Follow the clue.','Solve the clue and scan the destination QR to open your ten-question quiz.'],ROUND_2_ACTIVE:['Your quiz is ready.','Open the quiz to continue. Answers save as you select them. Results are announced later.'],ROUND_2_COMPLETED:['Head to the desktop station.','Follow the coordinator’s instructions and scan your desktop QR.'],PASSWORD_CHALLENGE:['Solve the password clue.','Continue on your assigned desktop. Your attempt count is saved.'],FINAL_CHALLENGE:['Finish the final challenge.','Continue on your assigned desktop. Your questions and answers are saved.'],COMPLETED:['Quest complete.','Your submissions have been recorded. Results will be announced after judging.'],DISQUALIFIED:['Contact your coordinator.','Your team is unable to continue. Please speak to an event coordinator.']};
+      const [heading,copy]=instructions[summary.team.state]||[summary.current_round,'Follow the coordinator’s instructions.'];
+      $('action-heading').textContent=heading;
+      $('action-copy').textContent=summary.round_status==='PAUSED'?'This round is paused. Your progress is saved. Wait for the coordinator to resume it.':copy;
+      if(summary.clue && summary.team.state==='ROUND_1_COMPLETED'){$('scan-result').hidden=false;$('scan-result').textContent=summary.clue;}
+      if(summary.destination && summary.team.state==='ROUND_2_COMPLETED'){$('scan-result').hidden=false;$('scan-result').textContent=summary.destination;}
+      $('team-round-track').innerHTML=(await api('/api/team/rounds')).map(r=>`<div class="team-round-step ${summary.team.state==='COMPLETED'||r.number<summary.round_number?'done':r.number===summary.round_number?'active':''}"><strong>${r.number} · ${esc(r.name)}</strong><small>${summary.team.state==='COMPLETED'||r.number<summary.round_number?'Completed':`${r.number===summary.round_number?'Your current round':'Up next'} · ${esc(r.status.toLowerCase())}`}</small></div>`).join('');
+      const rows=await api('/api/leaderboard');
+      $('team-leaderboard').innerHTML=rows.length?rows.map(r=>`<div class="team-rank"><span class="rank-num">${r.rank}</span><strong>${esc(r.team_name)}</strong><b>${r.score}</b></div>`).join(''):'<div class="empty-state">Results will be announced later.<br>Your scores stay private until the organizers publish them.</div>';
     } catch(error) {toast(error.message,true);}
   }
-  async function refreshLeaderboard(){try{const rows=await api('/api/leaderboard');document.getElementById('team-leaderboard').innerHTML=rows.length?rows.slice(0,10).map((row,index)=>`<div class="team-rank"><span class="rank-num ${index===0?'top':''}">${index+1}</span><div><strong>${esc(row.team_name)}</strong><small>${esc(row.team_id)} · R${row.round||'—'}</small></div><b>${row.score}</b></div>`).join(''):'<div class="empty-state">Scores will appear here.</div>';}catch(error){toast(error.message,true);}}
-  document.getElementById('start-round').onclick=async()=>{try{await api(`/api/team/rounds/${summary.round_id}/start`,{method:'POST',body:'{}'});toast('Round timer started');refresh();}catch(error){toast(error.message,true);}};
+  if($('start-round'))$('start-round').onclick=async()=>{try{await api(`/api/team/rounds/${summary.round_id}/start`,{method:'POST',body:'{}'});await refresh();}catch(e){toast(e.message,true);}};
   async function submitToken(value) {
-    const raw=value.trim();if(!raw)return toast('Enter a QR token or scan link.',true);
-    let token=raw;try{const parsed=new URL(raw);const match=parsed.pathname.match(/\/scan\/([^/]+)/);if(match)token=match[1];}catch{}
+    let token=value.trim();try{const url=new URL(token);token=url.pathname.split('/scan/')[1]||token;}catch{}
     try {
+      $('manual-scan').querySelector('button').disabled=true;
       const result=await api('/api/team/scan',{method:'POST',body:JSON.stringify({token})});
-      const container=document.getElementById('scan-result');container.hidden=false;
-      container.innerHTML=`<strong>${esc(result.qr_id)}</strong><p>${esc(result.prompt)}</p>${result.requires_answer?'<form id="clue-answer"><label>Your answer<input name="answer" maxlength="500" required></label><button class="button primary small" type="submit">Submit answer</button></form>':''}`;
-      if(result.requires_answer)container.querySelector('form').onsubmit=async event=>{event.preventDefault();try{const data=await api(`/api/team/scan/${result.scan_id}/answer`,{method:'POST',body:JSON.stringify(Object.fromEntries(new FormData(event.currentTarget)))});container.insertAdjacentHTML('beforeend',`<p><b>${data.correct?'Correct':'Not quite'} · ${data.points} points</b></p>`);container.querySelector('form').remove();refresh();}catch(error){toast(error.message,true);}};
-      document.getElementById('token-input').value='';toast('QR scan recorded by the server');
-    }catch(error){toast(error.message,true);}
+      $('scan-result').hidden=false;$('scan-result').textContent=`${result.qr_id}\n${result.prompt}\n${result.message}`;
+      if(result.round===2)await openQuiz();
+      await refresh();
+    }catch(e){toast(e.message,true);}finally{$('manual-scan').querySelector('button').disabled=false;}
   }
-  document.getElementById('manual-scan').onsubmit=event=>{event.preventDefault();submitToken(document.getElementById('token-input').value);};
-  document.getElementById('scan-open').onclick=async()=>{
-    const box=document.getElementById('camera-box');box.hidden=false;
-    if(!window.ZXingBrowser){toast('Camera scanner could not load. Enter the code manually.',true);return;}
-    try{const reader=new ZXingBrowser.BrowserMultiFormatReader();cameraControls=await reader.decodeFromVideoDevice(undefined,document.getElementById('camera-video'),(result,error)=>{if(result){cameraControls?.stop();box.hidden=true;submitToken(result.getText());}});}catch(error){toast('Camera access failed. Check browser permissions or enter the code manually.',true);}
+  if($('manual-scan'))$('manual-scan').onsubmit=e=>{e.preventDefault();submitToken($('token-input').value);};
+  if($('scan-open'))$('scan-open').onclick=async()=>{
+    if(!window.ZXingBrowser)return toast('Camera scanner unavailable. Paste the QR link.',true);
+    $('camera-box').hidden=false;
+    try{cameraControls=await new ZXingBrowser.BrowserMultiFormatReader().decodeFromVideoDevice(undefined,$('camera-video'),result=>{if(result){cameraControls?.stop();$('camera-box').hidden=true;submitToken(result.getText());}});}catch{$('camera-box').hidden=true;$('scan-fallback').open=true;toast('Camera access failed. Paste the QR link instead.',true);}
   };
-  document.getElementById('stop-camera').onclick=()=>{cameraControls?.stop();document.getElementById('camera-box').hidden=true;};
-  document.getElementById('quiz-next').onclick=async()=>{
-    try{const data=await api('/api/team/quiz/next',{method:'POST',body:'{}'});if(data.done){toast(data.message);return;}
-      activeQuiz=data;const box=document.getElementById('quiz-box');box.hidden=false;
-      box.innerHTML=`<small>QUESTION · ${data.points} POINTS</small><p><b>${esc(data.question)}</b></p><div>${Object.entries(data.options).map(([key,value])=>`<label class="quiz-option"><input type="radio" name="selected_answer" value="${key}"> <b>${key}</b> ${esc(value)}</label>`).join('')}</div><p>Time remaining: <b id="quiz-countdown">${data.time_limit}</b>s</p><button class="button primary small" id="quiz-submit">Submit answer</button>`;
-      let remaining=Math.max(0,data.time_limit-Math.floor((Date.now()-new Date(data.started_at).getTime())/1000));clearInterval(quizInterval);if(remaining===0){submitQuiz('');return;}quizInterval=setInterval(()=>{remaining--;const count=document.getElementById('quiz-countdown');if(count)count.textContent=Math.max(0,remaining);if(remaining<=0)submitQuiz('');},1000);
-      document.getElementById('quiz-submit').onclick=()=>submitQuiz(box.querySelector('input:checked')?.value||'');
-    }catch(error){toast(error.message,true);}
-  };
-  async function submitQuiz(selected_answer){clearInterval(quizInterval);if(!activeQuiz)return;try{const result=await api(`/api/team/quiz/${activeQuiz.answer_id}/submit`,{method:'POST',body:JSON.stringify({selected_answer})});document.getElementById('quiz-box').innerHTML=`<b>${result.expired?'Time expired.':result.correct?'Correct answer.':'Answer recorded.'}</b><p>${result.points} points</p>`;activeQuiz=null;refresh();}catch(error){toast(error.message,true);}}
-  document.getElementById('complete-round').onclick=async()=>{if(!confirm('Finish your current round? You cannot restart it.'))return;try{await api(`/api/team/rounds/${summary.round_id}/complete`,{method:'POST',body:'{}'});toast('Round completed');refresh();}catch(error){toast(error.message,true);}};
-  if(window.io){const socket=io();socket.emit('join_participant');socket.on('leaderboard',refreshLeaderboard);socket.on('leaderboard_update',refreshLeaderboard);}
-  refresh();setInterval(refresh,20000);
-  const scan=new URLSearchParams(location.search).get('scan');if(scan){history.replaceState({},'',location.pathname);setTimeout(()=>submitToken(scan),500);}
+  if($('stop-camera'))$('stop-camera').onclick=()=>{cameraControls?.stop();$('camera-box').hidden=true;};
+  async function renderChallenge(kind, box) {
+    const result=await api(`/api/team/${kind}`);
+    box.hidden=false;
+    if(result.submitted_at){box.innerHTML='<div class="completion-card" role="status"><h3>Submission confirmed.</h3><p>Your responses have been recorded. Results will be announced later.</p></div>';return;}
+    box.innerHTML=`<div class="challenge-heading"><h3>${kind==='quiz'?'Round 2 quiz':'Final challenge'}</h3><span class="challenge-progress" id="answer-progress"></span></div><form id="challenge-form"><p id="save-status" role="status">Answers saved on the server are restored below.</p>${result.questions.map((q,i)=>`<label class="question-row">${i+1}. ${esc(q.prompt)}${q.kind==='MCQ'?`<select required data-question="${q.id}"><option value="">Choose an answer</option>${Object.entries(q.options).map(([key,value])=>`<option value="${key}">${key}. ${esc(value)}</option>`).join('')}</select>`:q.kind==='TRUE/FALSE'?`<select required data-question="${q.id}"><option value="">Choose an answer</option><option>TRUE</option><option>FALSE</option></select>`:`<textarea required maxlength="4000" rows="3" data-question="${q.id}"></textarea>`}</label>`).join('')}<button class="button primary" type="submit">Submit ${kind==='quiz'?'quiz':'final challenge'}</button></form>`;
+    let pending=new Map(),saving=false;
+    const progress=()=>{const fields=[...box.querySelectorAll('[data-question]')];box.querySelector('#answer-progress').textContent=`${fields.filter(f=>f.value.trim()).length} of ${fields.length} answered`;};
+    const prefix=`quest:${summary?.team.team_id||document.body.dataset.team}:${kind}:`;
+    const state=box.querySelector('#save-status');
+    async function flush() {
+      if(saving)return; saving=true;
+      try {
+        while(pending.size){const [id,value]=pending.entries().next().value;state.textContent='Saving…';await api(`/api/team/${kind}/answers/${id}`,{method:'PUT',body:JSON.stringify({answer:value})});if(pending.get(id)===value){pending.delete(id);try{sessionStorage.removeItem(prefix+id);}catch{}}}
+        state.textContent='All answers saved on the server.';
+      }catch(e){state.textContent=`Unsaved answers — ${e.message}. Keep this page open; retrying.`;}finally{saving=false;}
+    }
+    box.querySelectorAll('[data-question]').forEach(input=>{
+      const id=input.dataset.question;
+      let draft=null;try{draft=sessionStorage.getItem(prefix+id);}catch{}
+      input.value=draft??result.answers[id]??'';
+      if(draft){pending.set(id,draft);}
+      let debounce;input.addEventListener('input',()=>{progress();if(input.value.trim()){pending.set(id,input.value);try{sessionStorage.setItem(prefix+id,input.value);}catch{}state.textContent='Unsaved changes…';clearTimeout(debounce);debounce=setTimeout(flush,700);}});input.addEventListener('change',()=>{progress();if(input.value.trim()){pending.set(id,input.value);try{sessionStorage.setItem(prefix+id,input.value);}catch{}flush();}});
+    });
+    progress();
+    const retry=setInterval(()=>{if(!document.contains(state)){clearInterval(retry);return;}if(pending.size)flush();},5000);
+    if(pending.size)flush();
+    window.addEventListener('beforeunload',e=>{if(pending.size){e.preventDefault();e.returnValue='';}});
+    box.querySelector('form').onsubmit=async e=>{
+      e.preventDefault();box.querySelectorAll('[data-question]').forEach(input=>{if(input.value.trim())pending.set(input.dataset.question,input.value);});
+      await flush();if(pending.size||saving)return toast('Wait until every answer is saved.',true);
+      const button=box.querySelector('button');button.disabled=true;
+      try{const response=await api(`/api/team/${kind}/submit`,{method:'POST',body:'{}'});box.innerHTML=`<div class="completion-card" role="status"><h3>Submission confirmed.</h3><p>${esc(response.message)}</p></div>`;if(!document.body.dataset.desktop)await refresh();}catch(e){toast(e.message,true);button.disabled=false;}
+    };
+  }
+  async function openQuiz(){try{await renderChallenge('quiz',$('quiz-box'));}catch(e){toast(e.message,true);}}
+  if($('quiz-next'))$('quiz-next').onclick=openQuiz;
+  if(document.body.dataset.desktop){
+    async function desktopRefresh(){try{const state=await api('/api/team/desktop');$('attempts').textContent=`Attempts remaining: ${state.attempts_remaining}`;$('password-form').hidden=state.unlocked;if(state.unlocked)await renderChallenge('final',$('quiz-box'));}catch(e){toast(e.message,true);}}
+    $('password-form').onsubmit=async e=>{e.preventDefault();const button=e.currentTarget.querySelector('button');button.disabled=true;try{const response=await api('/api/team/desktop/password',{method:'POST',body:JSON.stringify({password:$('password').value})});$('password').value='';$('desktop-message').textContent=response.message;await desktopRefresh();}catch(e){toast(e.message,true);}finally{button.disabled=false;}};
+    desktopRefresh();
+  }else{
+    refresh();setInterval(refresh,20000);setInterval(()=>{if(summary)$('team-elapsed').textContent=summary.round_started_at?new Date(Math.max(0,Date.now()-new Date(summary.round_started_at))).toISOString().slice(11,19):'—';},1000);
+    const scan=new URLSearchParams(location.search).get('scan');if(scan){$('scan-fallback').open=true;refresh().then(()=>submitToken(scan));history.replaceState({},'',location.pathname);}
+  }
 })();

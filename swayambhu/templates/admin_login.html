@@ -2,18 +2,16 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#11172c"><title>Admin access · SWAYAMBHU 2026</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+  <meta name="theme-color" content="#fcfaf3"><title>Admin access · SWAYAMBHU 2026</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
 </head>
 <body class="login-page">
   <main class="login-shell">
     <div class="login-brand"><span class="brand-mark">S<span>.</span></span><span>SWAYAMBHU <b>2026</b></span></div>
-    <p class="eyebrow">TECHNICAL FESTIVAL · AI & DATA SCIENCE</p>
+    <p class="eyebrow">JNEC · MGM UNIVERSITY</p>
     <h1>Command<br><span>the quest.</span></h1>
-    <p class="login-copy">Event operations console</p>
-    {% with messages = get_flashed_messages(with_categories=true) %}{% for category, message in messages %}<div class="notice error">{{ message }}</div>{% endfor %}{% endwith %}
+    <p class="festival-date">16–17 OCTOBER 2026 <span>Explore. Create. Compete.</span></p><p class="login-copy">Event operations console</p>
+    {% with messages = get_flashed_messages(with_categories=true) %}{% for category, message in messages %}<div class="notice error" role="alert">{{ message }}</div>{% endfor %}{% endwith %}
     <form method="post" class="login-form">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <label>Username<input name="username" autocomplete="username" required autofocus></label>
@@ -23,6 +21,11 @@
     <a class="quiet-link" href="{{ url_for('auth.team_login') }}">Team access <span>→</span></a>
     <div class="login-foot"><span class="live-dot"></span> CONTROL ROOM · PRIVATE ACCESS</div>
   </main>
-  <div class="login-art" aria-hidden="true"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="art-core">AI<br><small>QR QUEST</small></div><div class="art-coordinate">17° 23′ N<br>78° 29′ E</div></div>
+  <aside class="login-art festival-art" aria-label="Swayambhu 2026 festival">
+    <div class="festival-presentation"><p class="eyebrow">JAWAHARLAL NEHRU ENGINEERING COLLEGE</p>
+    <img class="festival-poster" src="{{ url_for('static', filename='images/swayambhu-2026-poster.png') }}" alt="JNEC and MGM University present Swayambhu 2026, October 16–17. Ideas, innovation, impact.">
+    <div class="festival-quest"><span class="eyebrow">AI QR QUEST</span><h2>Follow the clues.<br>Find your next breakthrough.</h2><div class="festival-stages"><span><b>01</b> Find the clue</span><span><b>02</b> Test your knowledge</span><span><b>03</b> Solve the challenge</span></div></div></div>
+  </aside>
+  <script src="{{ url_for('static', filename='js/ux.js') }}"></script>
 </body>
 </html>
