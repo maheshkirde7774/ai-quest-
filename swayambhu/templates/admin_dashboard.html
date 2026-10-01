@@ -1,3 +1,4 @@
+{% from '_icons.html' import icon %}
 <!doctype html>
 <html lang="en">
 <head>
@@ -8,28 +9,28 @@
 </head>
 <body class="app-page" data-role="admin">
   <aside class="sidebar" id="sidebar">
-    <a class="side-brand" href="#overview"><span class="brand-mark">S<span>.</span></span><span>SWAYAMBHU<small>2026 · AI QR QUEST</small></span></a>
+    <a class="side-brand" href="#overview">{% include '_festival_logo.html' %}<span>SWAYAMBHU<small>2026 · AI QR QUEST</small></span></a>
     <div class="side-label">EVENT CONTROL</div>
     <nav class="side-nav" aria-label="Admin navigation">
-      <button class="nav-item active" data-view="overview"><span>◫</span>Dashboard</button>
-      <button class="nav-item" data-view="teams"><span>♙</span>Teams</button>
-      <button class="nav-item" data-view="qrs"><span>▦</span>QR Management</button>
-      <button class="nav-item" data-view="questions"><span>☷</span>Questions</button>
-      <button class="nav-item" data-view="rounds"><span>◷</span>Round Control</button>
-      <button class="nav-item" data-view="monitoring"><span>⌁</span>Live Monitoring</button>
-      <button class="nav-item" data-view="scores"><span>↗</span>Scores</button>
-      <button class="nav-item" data-view="leaderboard"><span>☷</span>Leaderboard</button>
-      <button class="nav-item" data-view="results"><span>✳</span>Final Results</button>
-      <button class="nav-item" data-view="activity"><span>◴</span>Activity Logs</button>
-      <button class="nav-item" data-view="operations"><span>▣</span>Event Operations</button>
-      <button class="nav-item" data-view="settings"><span>⚙</span>Settings</button>
+      <button class="nav-item active" data-view="overview">{{ icon('overview') }}Dashboard</button>
+      <button class="nav-item" data-view="teams">{{ icon('teams') }}Teams</button>
+      <button class="nav-item" data-view="qrs">{{ icon('qrs') }}QR Management</button>
+      <button class="nav-item" data-view="questions">{{ icon('questions') }}Questions</button>
+      <button class="nav-item" data-view="rounds">{{ icon('rounds') }}Round Control</button>
+      <button class="nav-item" data-view="monitoring">{{ icon('monitoring') }}Live Monitoring</button>
+      <button class="nav-item" data-view="scores">{{ icon('scores') }}Scores</button>
+      <button class="nav-item" data-view="leaderboard">{{ icon('leaderboard') }}Leaderboard</button>
+      <button class="nav-item" data-view="results">{{ icon('results') }}Final Results</button>
+      <button class="nav-item" data-view="activity">{{ icon('activity') }}Activity Logs</button>
+      <button class="nav-item" data-view="operations">{{ icon('operations') }}Event Operations</button>
+      <button class="nav-item" data-view="settings">{{ icon('settings') }}Settings</button>
     </nav>
     <div class="sidebar-bottom"><div class="event-chip"><span class="live-dot"></span><span>EVENT SYSTEM<small>Local operations</small></span></div>
-      <div class="admin-chip"><span class="avatar">{{ admin.username[:1]|upper }}</span><span>{{ admin.username }}<small>{{ admin.role|replace('-', ' ')|title }}</small></span><form method="post" action="{{ url_for('auth.logout') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="icon-button" title="Log out" aria-label="Log out">↗</button></form></div>
+      <div class="admin-chip"><span class="avatar">{{ admin.username[:1]|upper }}</span><span>{{ admin.username }}<small>{{ admin.role|replace('-', ' ')|title }}</small></span><form method="post" action="{{ url_for('auth.logout') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="icon-button" title="Log out" aria-label="Log out">{{ icon('logout') }}</button></form></div>
     </div>
   </aside>
   <a class="skip-link" href="#main-content">Skip to content</a><main id="main-content" tabindex="-1" class="main-area">
-    <header class="topbar"><button class="icon-button mobile-menu" id="menu-toggle" aria-label="Open navigation" aria-controls="sidebar" aria-expanded="false">☰</button><div><div class="breadcrumb">SWAYAMBHU <span>/</span> 2026</div><h1 id="page-title">Dashboard</h1></div><div class="topbar-right"><span class="system-state" id="connection-status" role="status"><i class="live-dot"></i><span>Connecting…</span></span><span id="clock" class="clock"></span></div></header>
+    <header class="topbar"><button class="icon-button mobile-menu" id="menu-toggle" aria-label="Open navigation" aria-controls="sidebar" aria-expanded="false">{{ icon('menu') }}</button><div><div class="breadcrumb">SWAYAMBHU <span>/</span> 2026</div><h1 id="page-title">Dashboard</h1></div><div class="topbar-right"><span class="system-state" id="connection-status" role="status"><i class="live-dot"></i><span>Connecting…</span></span><span id="clock" class="clock"></span></div></header>
     <div class="content-area">
       <section class="view active" id="view-overview">
         <div class="welcome-strip"><div><p class="eyebrow">JNEC · MGM UNIVERSITY · 16–17 OCTOBER</p><h2>The quest, at a glance.</h2></div><div class="round-pill"><span class="live-dot"></span><span id="current-round">Loading round status</span></div></div>

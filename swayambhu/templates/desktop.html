@@ -3,7 +3,7 @@
 <body class="team-page desktop-page" data-desktop="{{ desktop.id }}" data-team="{{ current_user.team_id }}">
 <a class="skip-link" href="#main-content">Skip to content</a>
 <main id="main-content" tabindex="-1" class="team-main">
-<header class="desktop-heading"><p class="eyebrow">SWAYAMBHU 2026 · ROUND 03</p><h1>The desktop challenge.</h1><p class="subtle">{{ desktop.name }} <span aria-hidden="true">/</span> {{ current_user.team_name }}</p></header>
+<header class="desktop-heading"><div class="station-brand">{% include '_festival_logo.html' %}<span>AI QR QUEST<small>JNEC · MGM University</small></span></div><p class="eyebrow">SWAYAMBHU 2026 · ROUND 03</p><h1>The desktop challenge.</h1><p class="subtle">{{ desktop.name }} <span aria-hidden="true">/</span> {{ current_user.team_name }}</p></header>
 <section class="desktop-clue"><p class="eyebrow">YOUR PASSWORD CLUE</p>{{ desktop.qr.clue }}</section>
 <p id="desktop-message" role="status">Solve the riddle and enter the password. A correct answer or three failed attempts unlocks the final challenge.</p>
 <p id="attempts" class="status-badge" role="status"></p>

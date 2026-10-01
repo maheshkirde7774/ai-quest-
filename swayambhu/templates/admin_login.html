@@ -2,30 +2,25 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#fcfaf3"><title>Admin access · SWAYAMBHU 2026</title>
+  <meta name="theme-color" content="#f6f8ff"><title>Admin access · SWAYAMBHU 2026</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
 </head>
-<body class="login-page">
+<body class="login-page login-redesign">
   <main class="login-shell">
-    <div class="login-brand"><span class="brand-mark">S<span>.</span></span><span>SWAYAMBHU <b>2026</b></span></div>
-    <p class="eyebrow">JNEC · MGM UNIVERSITY</p>
-    <h1>Command<br><span>the quest.</span></h1>
-    <p class="festival-date">16–17 OCTOBER 2026 <span>Explore. Create. Compete.</span></p><p class="login-copy">Event operations console</p>
+    <div class="login-brand">{% include '_festival_logo.html' %}<div class="login-brand-copy"><strong>AI QR QUEST</strong><span>Swayambhu 2026</span><small>JNEC · MGM University</small></div></div>
+    <div class="login-intro"><p class="eyebrow">EVENT OPERATIONS</p><h1>Run the quest.</h1><p class="login-copy">Sign in to manage teams, rounds and event operations.</p></div>
+    <div class="login-event-meta"><span><b>17</b> OCTOBER 2026</span><span>ENTC Department · JNEC</span></div>
     {% with messages = get_flashed_messages(with_categories=true) %}{% for category, message in messages %}<div class="notice error" role="alert">{{ message }}</div>{% endfor %}{% endwith %}
     <form method="post" class="login-form">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <label>Username<input name="username" autocomplete="username" required autofocus></label>
-      <label>Password<input type="password" name="password" autocomplete="current-password" required></label>
-      <button class="button primary wide" type="submit">Sign in <span aria-hidden="true">↗</span></button>
+      <label for="admin-username">Username<input id="admin-username" name="username" autocomplete="username" placeholder="Enter your username" required autofocus></label>
+      <label for="admin-password">Password<input id="admin-password" name="password" type="password" autocomplete="current-password" placeholder="Enter your password" required></label>
+      <button class="button primary wide" type="submit">Sign in <span aria-hidden="true">→</span></button>
     </form>
-    <a class="quiet-link" href="{{ url_for('auth.team_login') }}">Team access <span>→</span></a>
-    <div class="login-foot"><span class="live-dot"></span> CONTROL ROOM · PRIVATE ACCESS</div>
+    <p class="login-help">Authorized event staff only.</p>
+    <footer class="login-links"><a href="{{ url_for('auth.team_login') }}">Participant sign in <span aria-hidden="true">→</span></a><span class="login-assurance">Private staff access</span></footer>
   </main>
-  <aside class="login-art festival-art" aria-label="Swayambhu 2026 festival">
-    <div class="festival-presentation"><p class="eyebrow">JAWAHARLAL NEHRU ENGINEERING COLLEGE</p>
-    <img class="festival-poster" src="{{ url_for('static', filename='images/swayambhu-2026-poster.png') }}" alt="JNEC and MGM University present Swayambhu 2026, October 16–17. Ideas, innovation, impact.">
-    <div class="festival-quest"><span class="eyebrow">AI QR QUEST</span><h2>Follow the clues.<br>Find your next breakthrough.</h2><div class="festival-stages"><span><b>01</b> Find the clue</span><span><b>02</b> Test your knowledge</span><span><b>03</b> Solve the challenge</span></div></div></div>
-  </aside>
+  {% include '_login_event.html' %}
   <script src="{{ url_for('static', filename='js/ux.js') }}"></script>
 </body>
 </html>
