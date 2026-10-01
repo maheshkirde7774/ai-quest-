@@ -13,6 +13,13 @@ scores_bp = Blueprint("scores", __name__)
 def live_leaderboard():
     if not current_user.is_authenticated:
         return jsonify(error="Login required."), 401
+    from services.event import event_config
+    if getattr(current_user, "role", "") == "team":
+        event = event_config()
+        if current_user.status in ("DISABLED", "DISQUALIFIED") or not event.results_published or not event.leaderboard_visible:
+            return jsonify([])
+        from routes.results import get_result_rows
+        return jsonify(get_result_rows())
     return jsonify(leaderboard_rows())
 
 

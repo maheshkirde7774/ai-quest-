@@ -37,11 +37,18 @@ def get_results():
 @results_bp.post("/api/results/generate")
 @admin_required
 def generate_results():
+    from services.event import event_config
+    from models import FinalAssignment
+    event = event_config()
+    if event.results_locked:
+        return jsonify(error="Results are locked."), 409
+    if FinalAssignment.query.filter_by(reviewed=False).first():
+        return jsonify(error="Review all final assignments before generating results."), 409
     locked = FinalResult.query.filter_by(locked=True).first()
     if locked:
         return jsonify(error="Final results are locked and cannot be regenerated."), 409
     rounds = Round.query.order_by(Round.number).all()
-    if len(rounds) != 3 or any(event_round.status != "COMPLETED" for event_round in rounds):
+    if len(rounds) != 3 or any(event_round.status != "ENDED" for event_round in rounds):
         return jsonify(error="All three rounds must be completed before generating results."), 409
     eligible_teams = Team.query.filter(
         Team.status.notin_(("DISQUALIFIED", "DISABLED"))
@@ -74,6 +81,7 @@ def generate_results():
             item[0].team_id,
         )
     )
+    event.results_published = False
     FinalResult.query.delete()
     generated_at = utcnow()
     for rank, (team, score, duration, completed_at) in enumerate(results, start=1):
@@ -116,6 +124,11 @@ def lock_results():
     results = FinalResult.query.order_by(FinalResult.rank).all()
     if not results:
         return jsonify(error="Generate results before locking them."), 409
+    from services.event import event_config
+    live = {r["team_id"]: r for r in leaderboard_rows()}
+    if len(live) != len(results) or any(r.team.team_id not in live or (live[r.team.team_id]["score"] != r.total_score or live[r.team.team_id]["time"] != r.total_time or live[r.team.team_id]["rank"] != r.rank or live[r.team.team_id]["status"] != "COMPLETED") for r in results):
+        return jsonify(error="Scores changed. Regenerate results before locking."), 409
+    event_config().results_locked = True
     for result in results:
         result.locked = True
     audit("Final result locked", f"{len(results)} teams")
@@ -131,9 +144,17 @@ def unlock_results():
 
     if current_user.role != "super-admin":
         return jsonify(error="Only a super-admin can unlock final results."), 403
+    from services.event import event_config
+    reason = str((request.get_json(silent=True) or {}).get("reason", "")).strip()
+    if not reason:
+        return jsonify(error="Explain why results must be unlocked."), 400
+    previous = get_result_rows()
+    event = event_config()
+    event.results_locked = False
+    event.results_published = False
     results = FinalResult.query.filter_by(locked=True).all()
     for result in results:
         result.locked = False
-    audit("Final result unlocked", f"{len(results)} teams")
+    audit("RESULTS_UNLOCKED", f"{len(results)} teams", {"reason": reason[:1000], "before": previous})
     db.session.commit()
     return jsonify(ok=True)

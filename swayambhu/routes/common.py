@@ -1,11 +1,11 @@
 from functools import wraps
 from datetime import timezone
 
-from flask import jsonify
+from flask import jsonify, g, current_app
 from flask_login import current_user
 
 from extensions import db, socketio
-from models import ActivityLog
+from models import ActivityLog, utcnow
 
 
 def iso_utc(value):
@@ -41,12 +41,17 @@ def team_required(function):
 
 
 def audit(action, target="", metadata=None):
+    import json
+    action = action.upper().replace(" ", "_")
+    current_app.logger.info(json.dumps({"event": action, "request_id": getattr(g, "request_id", None), "timestamp": utcnow().isoformat(), "round": (metadata or {}).get("round"), "team_id": current_user.team_id if current_user.is_authenticated and getattr(current_user, "role", "") == "team" else None}))
     admin_id = current_user.id if current_user.is_authenticated and getattr(
         current_user, "role", ""
     ) in ("admin", "super-admin") else None
     db.session.add(
         ActivityLog(
             admin_id=admin_id,
+            team_id=current_user.id if current_user.is_authenticated and getattr(current_user, "role", "") == "team" else None,
+            request_id=getattr(g, "request_id", None),
             action=action,
             target=str(target),
             metadata_json=metadata or {},
@@ -62,5 +67,14 @@ def emit_leaderboard():
     from utils.scoring import leaderboard_rows
 
     payload = leaderboard_rows()
-    socketio.emit("leaderboard", payload, room="participants")
-    socketio.emit("leaderboard_update", payload, room="participants")
+    socketio.emit("leaderboard", payload, room="admins")
+    socketio.emit("leaderboard_update", payload, room="admins")
+
+def super_admin_required(function):
+    @wraps(function)
+    @admin_required
+    def wrapped(*args, **kwargs):
+        if current_user.role != "super-admin":
+            return jsonify(error="Super-admin access required."), 403
+        return function(*args, **kwargs)
+    return wrapped
