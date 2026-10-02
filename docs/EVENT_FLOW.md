@@ -1,14 +1,15 @@
 # Event flow and documented assumptions
 
-## Team progression
+## Five-team progression
 
 REGISTERED → ROUND_1_ACTIVE → ROUND_1_COMPLETED → ROUND_2_ACTIVE →
 ROUND_2_COMPLETED → ROUND_3_ACTIVE → PASSWORD_CHALLENGE → FINAL_CHALLENGE → COMPLETED.
-DISABLED/DISQUALIFIED blocks all participant actions. Global round states are LOCKED,
-READY, ACTIVE, PAUSED and ENDED. Ending a global round never awards individual completion.
-Several global rounds may be ACTIVE concurrently so teams can physically progress at
-individual speeds. Admin pause blocks writes and preserves existing assignments/answers.
-Read-only saved clues and drafts remain accessible while paused.
+DISABLED/DISQUALIFIED blocks participant actions. The live event is one fixed group of five
+teams. Register all five and assign each a Round 1 QR before starting. Teams play in parallel
+within a round, but the next round cannot start until all five have completed the current
+challenge. Round states are LOCKED, READY, ACTIVE, PAUSED and ENDED; Round Control shows
+each team's state and completion count. Admin pause blocks writes and preserves existing
+assignments/answers. Read-only saved clues and drafts remain accessible while paused.
 
 ## Round 1
 

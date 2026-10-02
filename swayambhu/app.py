@@ -21,6 +21,8 @@ def create_app(test_config=None):
     app.config.from_object(Config)
     if test_config:
         app.config.update(test_config)
+    if app.config.get("TESTING") and "ROUND_GROUP_SIZE" not in (test_config or {}):
+        app.config["ROUND_GROUP_SIZE"] = 0
     Config.validate_runtime()
     if app.config["SQLALCHEMY_DATABASE_URI"].startswith("sqlite:"):
         options = dict(app.config.get("SQLALCHEMY_ENGINE_OPTIONS", {}))

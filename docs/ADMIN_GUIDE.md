@@ -28,9 +28,11 @@ The header reports the live connection separately from the event's active/paused
 4. Create the Round 3 bank and set final question count before assignments exist. Create
    each desktop with its password riddle and secret password. Use the station-screen link
    on the corresponding college desktop. No actual OS password is returned by the app.
-5. Activate printed QR codes, unlock/start rounds. Global rounds may overlap. Pause
-   preserves all individual data; resume reopens actions. Ending a round blocks remaining
-   actions without granting completion.
+5. Register exactly five teams, assign each a Round 1 QR, and activate the printed codes.
+   Start Round 1 when all five are ready. Teams play in parallel, but the next round remains
+   blocked until all five complete the current challenge. Round Control shows each team's
+   status and enables ending/starting rounds as the group becomes ready. Pause preserves
+   individual data; resume reopens actions.
 6. Find teams by name/ID. Timeline shows members, state, per-round scores, successful and
    rejected scans, logins and submissions. View desktop occupancy and attempts in Operations.
 7. Review submitted final answers, enter per-question marks and save. If a score needs an

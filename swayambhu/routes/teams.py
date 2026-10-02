@@ -1,6 +1,6 @@
 from datetime import timezone
 
-from flask import Blueprint, flash, jsonify, redirect, render_template, request, url_for
+from flask import Blueprint, current_app, flash, jsonify, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 from sqlalchemy import func
 
@@ -73,6 +73,9 @@ def list_teams():
 @admin_required
 def create_team():
     data = request.get_json(silent=True) or request.form
+    group_size = current_app.config.get("ROUND_GROUP_SIZE", 5)
+    if group_size and Team.query.count() >= group_size:
+        return jsonify(error=f"This event is configured for exactly {group_size} teams."), 409
     name = str(data.get("team_name", "")).strip()
     if not name or len(name) > 120:
         return jsonify(error="Team name is required (120 characters maximum)."), 400

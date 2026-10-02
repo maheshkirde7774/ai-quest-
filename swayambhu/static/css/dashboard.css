@@ -3,3 +3,5 @@
 @import url("ui.css");
 
 @import url("login.css");
+
+.round-card-heading{display:flex;align-items:center;gap:12px}.round-card-heading h3{margin:0}.round-card-heading p{margin:5px 0 0}.round-team-progress{margin-top:16px;padding-top:13px;border-top:1px solid #e8eaf0}.round-team-progress>strong{font-size:12px}.round-team-progress>span{float:right;font-size:12px;font-weight:700}.round-team-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px 12px;list-style:none;padding:0;margin:11px 0 0}.round-team-list li{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0}.round-team-list li>span:first-child{min-width:0}.round-team-list strong,.round-team-list small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.round-team-list strong{font-size:11px}.round-team-list small{font-size:10px;color:#8791a5}.round-team-list .badge{flex:none}.round-team-empty{grid-column:1/-1;color:#8791a5;font-size:12px}.round-actions .button:disabled{opacity:.48;cursor:not-allowed}@media(max-width:620px){.round-team-list{grid-template-columns:1fr}}

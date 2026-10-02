@@ -26,6 +26,7 @@ class Config:
     PERMANENT_SESSION_LIFETIME = timedelta(hours=8)
     PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "")
     EVENT_MODE = os.getenv("EVENT_MODE", "TEST").upper()
+    ROUND_GROUP_SIZE = int(os.getenv("ROUND_GROUP_SIZE", "5"))
     APP_ENV = os.getenv("APP_ENV", "development").lower()
     TEMPLATES_AUTO_RELOAD = APP_ENV != "production"
     MAX_CONTENT_LENGTH = 128 * 1024

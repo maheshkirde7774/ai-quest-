@@ -164,6 +164,25 @@ class EventFlowTests(unittest.TestCase):
         with self.app.app_context():
             self.assertEqual(RoundSession.query.one().status,'ACTIVE')
 
+    def test_fixed_five_team_round_lockstep(self):
+        self.app.config['ROUND_GROUP_SIZE']=5
+        self.assertEqual(self.admin.post('/api/rounds/1/start',json={}).status_code,409)
+        teams=[self.team]
+        teams.extend(self.new_team()[0] for _ in range(4))
+        self.assertEqual(self.admin.post('/api/rounds/1/start',json={}).status_code,200)
+        sixth=self.admin.post('/api/teams',json={'team_name':'Extra Team','member_1':'Sam','assigned_qr_id':self.qr1})
+        self.assertEqual(sixth.status_code,409)
+        self.assertEqual(self.admin.post('/api/rounds/2/unlock',json={}).status_code,409)
+        self.assertEqual(self.admin.post('/api/rounds/2/start',json={}).status_code,409)
+        self.assertEqual(self.admin.post('/api/rounds/1/end',json={}).status_code,409)
+        for team in teams:
+            self.assertEqual(team.post('/api/team/rounds/1/start',json={}).status_code,200)
+            self.assertEqual(self.scan('round1-token',team).status_code,200)
+        rounds=self.admin.get('/api/rounds').get_json()
+        self.assertEqual(rounds[0]['completed_teams'],5)
+        self.assertEqual(self.admin.post('/api/rounds/1/end',json={}).status_code,200)
+        self.assertEqual(self.admin.post('/api/rounds/2/start',json={}).status_code,200)
+
     def test_quiz_persistence_submission_scoring_and_hidden_results(self):
         self.round1();self.assertEqual(self.scan('round2-token').status_code,200)
         result=self.team.get('/api/team/quiz').get_json()

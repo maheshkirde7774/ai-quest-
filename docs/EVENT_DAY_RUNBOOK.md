@@ -24,7 +24,7 @@
 ## Start and operate
 
 - [ ] Activate intended QR codes and event; unlock/start Round 1.
-- [ ] Unlock/start Rounds 2 and 3 when stations are staffed. Global rounds may overlap.
+- [ ] Unlock/start each next round only after all five teams complete the current round.
 - [ ] Keep Dashboard, Live Monitor and Event Operations desktop monitor available.
 - [ ] Observe round populations, team timelines, rejected scans and password attempts.
 - [ ] On socket disconnect, use polling and reload; assignments survive server restart.
