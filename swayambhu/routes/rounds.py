@@ -1,44 +1,63 @@
-from flask import Blueprint, jsonify
+from flask import Blueprint, current_app, jsonify
 from flask_login import current_user
 
 from extensions import db
-from models import Round, RoundSession, Team, utcnow
+from models import (Answer, DesktopSession, FinalAnswer, FinalAssignment, FinalResult,
+                    QRScan, QuizAttempt, Round, RoundSession, Score,
+                    Team, utcnow)
 from routes.common import admin_required, audit, emit_activity, emit_leaderboard, iso_utc, team_required
-from services.event import round_can_start, round_group_complete, round_group_size
 
 rounds_bp = Blueprint("rounds", __name__)
+
+
+@rounds_bp.post("/api/rounds/start-all")
+@admin_required
+def start_all_rounds():
+    """Open the global challenges together; batch release still gates Round 1."""
+    from services.event import event_config
+
+    event = event_config()
+    if event.results_locked:
+        return jsonify(error="Results are locked."), 409
+    rounds = Round.query.order_by(Round.number).all()
+    if [row.number for row in rounds] != [1, 2, 3]:
+        return jsonify(error="Configure all three rounds before opening the event."), 409
+    reopening = any(row.status == "ENDED" for row in rounds)
+    if reopening:
+        if current_user.role != "super-admin":
+            return jsonify(error="Super-admin access is required to reopen test rounds."), 403
+        if (current_app.config["APP_ENV"] == "production"
+                or current_app.config["EVENT_MODE"] != "TEST"
+                or event.mode != "TEST"):
+            return jsonify(error="Ended rounds cannot be reopened outside TEST mode."), 409
+        progress_models = (RoundSession, QRScan, Answer, QuizAttempt,
+                           DesktopSession, FinalAssignment, FinalAnswer, Score, FinalResult)
+        if event.results_published or any(model.query.first() for model in progress_models):
+            return jsonify(error="Recorded test progress or published results prevent reopening rounds."), 409
+    changed = any(row.status != "ACTIVE" for row in rounds) or not event.active
+    event.active = True
+    started_at = utcnow()
+    for row in rounds:
+        row.status = "ACTIVE"
+        row.started_at = started_at if reopening else row.started_at or started_at
+        if reopening:
+            row.ended_at = None
+    if changed:
+        audit("TEST_ROUNDS_REOPENED" if reopening else "ROUNDS_OPENED_TOGETHER", event.name)
+    db.session.commit()
+    if changed:
+        emit_activity("All three rounds opened; batch release controls Round 1 entry", "round")
+    return jsonify(rounds=[{"id": row.id, "number": row.number, "status": row.status} for row in rounds])
 
 
 @rounds_bp.get("/api/rounds")
 @admin_required
 def list_rounds():
-    teams = Team.query.order_by(Team.id).all()
-    required_teams = round_group_size()
-    sessions_by_round = {
-        (session.round_id, session.team_id): session.status
-        for session in RoundSession.query.all()
-    }
-    result = []
-    for item in Round.query.order_by(Round.number):
-        completed_teams = sum(
-            team.status in ("DISABLED", "DISQUALIFIED")
-            or sessions_by_round.get((item.id, team.id)) == "COMPLETED"
-            for team in teams
-        )
-        result.append({
-            "id": item.id, "number": item.number, "name": item.name, "status": item.status,
-            "started_at": iso_utc(item.started_at), "ended_at": iso_utc(item.ended_at),
-            "completed_teams": completed_teams, "team_count": len(teams),
-            "required_teams": required_teams,
-            "can_start": round_can_start(item.number),
-            "can_end": not required_teams or round_group_complete(item.number),
-            "teams": [{
-                "id": team.id, "team_id": team.team_id, "team_name": team.team_name,
-                "team_status": team.status, "state": team.state,
-                "session_status": sessions_by_round.get((item.id, team.id)),
-            } for team in teams],
-        })
-    return jsonify(result)
+    return jsonify([
+        {"id": item.id, "number": item.number, "name": item.name, "status": item.status,
+         "started_at": iso_utc(item.started_at), "ended_at": iso_utc(item.ended_at)}
+        for item in Round.query.order_by(Round.number)
+    ])
 
 
 @rounds_bp.post("/api/rounds/<int:round_id>/<action>")
@@ -51,14 +70,11 @@ def control_round(round_id, action):
     event = event_config()
     if event.results_locked:
         return jsonify(error="Results are locked."), 409
+    if action == "start" and event_round.status == "READY":
+        return start_all_rounds()
     if action in ("start", "resume"):
         if event_round.status not in ("READY", "ACTIVE", "PAUSED"):
             return jsonify(error="Unlock this round before starting it."), 409
-        if not round_can_start(event_round.number):
-            expected = round_group_size()
-            if event_round.number == 1:
-                return jsonify(error=f"Register and assign Round 1 QRs to all {expected} teams first."), 409
-            return jsonify(error=f"All {expected} teams must complete Round {event_round.number - 1} first."), 409
         was_paused = event_round.status == "PAUSED"
         event.active = True
         event_round.status = "ACTIVE"
@@ -72,25 +88,13 @@ def control_round(round_id, action):
     elif action == "end":
         if event_round.status not in ("ACTIVE", "PAUSED"):
             return jsonify(error="Only an active or paused round can be ended."), 409
-        if round_group_size() and not round_group_complete(event_round.number):
-            expected = round_group_size()
-            return jsonify(error=f"End Round {event_round.number} after all {expected} teams complete it."), 409
+        if Team.query.filter(Team.status.notin_(("COMPLETED", "DISABLED", "DISQUALIFIED"))).first():
+            return jsonify(error="Complete or disqualify every eligible team before ending a global round."), 409
         event_round.status = "ENDED"
         event_round.ended_at = utcnow()
-        next_round = Round.query.filter_by(number=event_round.number + 1).first()
-        if next_round and next_round.status == "LOCKED":
-            next_round.status = "READY"
         label = "ended"
     elif action == "unlock":
-        if event_round.status != "LOCKED":
-            return jsonify(error="Only a locked round can be unlocked."), 409
-        if not round_can_start(event_round.number):
-            expected = round_group_size()
-            if event_round.number == 1:
-                return jsonify(error=f"Register and assign Round 1 QRs to all {expected} teams first."), 409
-            return jsonify(error=f"All {expected} teams must complete Round {event_round.number - 1} first."), 409
-        event_round.status = "READY"
-        label = "unlocked"
+        return jsonify(error="Use Open all rounds to start the event."), 409
     else:
         return jsonify(error="Unknown round action."), 404
     audit(f"Round {label}", f"Round {event_round.number}")

@@ -7,7 +7,7 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from app import create_app
 from extensions import db
-from models import DesktopSession, FinalAssignment, PasswordAttempt, QuizAttempt, Score
+from models import ActivityLog, Batch, Desktop, DesktopSession, FinalAssignment, PasswordAttempt, QRChallenge, QuizAttempt, Score
 import test_event_flow as flow
 
 
@@ -32,7 +32,7 @@ class RaceTests(unittest.TestCase):
                 connection.execute(sql.SQL('CREATE SCHEMA {}').format(sql.Identifier(self.schema)))
             uri=self.postgres.replace('postgresql://','postgresql+psycopg://')
             options={'connect_args':{'options':f'-csearch_path={self.schema}'}}
-        self.app=create_app({'TESTING':True,'AUTO_INIT_DB':False,'WTF_CSRF_ENABLED':False,
+        self.app=create_app({'TESTING':True,'APP_ENV':'development','EVENT_MODE':'TEST','AUTO_INIT_DB':False,'WTF_CSRF_ENABLED':False,
                              'SQLALCHEMY_DATABASE_URI':uri,'SQLALCHEMY_ENGINE_OPTIONS':options,'SECRET_KEY':'test-secret'})
         with self.app.app_context():db.create_all();self.qr1=flow.seed_content()
         self.admin=self.app.test_client();self.admin.post('/admin/login',data={'username':'operator','password':'a-secure-test-password'})
@@ -82,3 +82,23 @@ class RaceTests(unittest.TestCase):
         self.assertEqual(statuses.count(200),1,statuses)
         self.assertEqual(statuses.count(409),11,statuses)
         with self.app.app_context():self.assertEqual(Score.query.filter_by(round_id=1).one().points,20)
+
+    def test_simultaneous_round_three_entries_release_one_batch(self):
+        other,_=self.new_team()
+        for _ in range(4):self.new_team()
+        with self.app.app_context():
+            qr=QRChallenge(qr_id='DESKTOP-QR-2',secure_token='round3-token-2',round_id=3,status='ACTIVE')
+            db.session.add(qr);db.session.flush()
+            desktop=Desktop(name='DESKTOP-02',qr_id=qr.id)
+            desktop.set_password('forty-two')
+            db.session.add(desktop);db.session.commit()
+        self.quiz(self.team);self.quiz(other)
+        def scan(pair):
+            client,token=pair
+            return client.post('/api/team/scan',json={'token':token}).status_code
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            statuses=list(pool.map(scan,[(self.team,'round3-token'),(other,'round3-token-2')]))
+        self.assertEqual(statuses,[200,200])
+        with self.app.app_context():
+            self.assertEqual(Batch.query.filter_by(number=2).one().status,'RELEASED')
+            self.assertEqual(ActivityLog.query.filter_by(action='BATCH_RELEASED',target='2').count(),1)

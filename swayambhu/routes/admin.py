@@ -5,7 +5,7 @@ from flask_login import current_user, login_required
 from sqlalchemy import func
 
 from extensions import db
-from models import ActivityLog, Answer, QRChallenge, Round, RoundSession, ScanLog, Score, Team
+from models import ActivityLog, Answer, Batch, QRChallenge, Round, RoundSession, ScanLog, Score, Team
 from routes.common import admin_required, iso_utc
 from utils.scoring import leaderboard_rows
 
@@ -30,6 +30,7 @@ def overview():
     active_round = Round.query.filter_by(status="ACTIVE").first()
     return jsonify(
         total_teams=Team.query.count(),
+        batches=[{"number": b.number, "status": b.status, "triggered": bool(b.triggered_at)} for b in Batch.query.order_by(Batch.number)],
         active_teams=Team.query.filter_by(status="ACTIVE").count(),
         completed_teams=Team.query.filter_by(status="COMPLETED").count(),
         current_round=active_round.name if active_round else "Not started",

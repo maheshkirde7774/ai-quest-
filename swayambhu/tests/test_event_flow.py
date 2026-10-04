@@ -2,7 +2,7 @@
 import unittest
 from app import create_app
 from extensions import db, socketio
-from models import (ActivityLog, Admin, Answer, Desktop, DesktopSession, Event, FinalAnswer,
+from models import (ActivityLog, Admin, Answer, Batch, Desktop, DesktopSession, Event, FinalAnswer,
                     FinalAssignment, PasswordAttempt, QRChallenge, QRScanEvent, Question,
                     Quiz, QuizAttempt, QuizQuestion, Round, RoundSession, Score, Team)
 from routes.common import emit_leaderboard
@@ -47,7 +47,7 @@ def seed_content():
 
 class EventFlowTests(unittest.TestCase):
     def setUp(self):
-        self.app=create_app({"TESTING":True,"AUTO_INIT_DB":False,"WTF_CSRF_ENABLED":False,
+        self.app=create_app({"TESTING":True,"APP_ENV":"development","EVENT_MODE":"TEST","AUTO_INIT_DB":False,"WTF_CSRF_ENABLED":False,
                              "SQLALCHEMY_DATABASE_URI":"sqlite:///:memory:","SECRET_KEY":"test-secret"})
         with self.app.app_context():
             db.create_all();self.qr1=seed_content()
@@ -109,6 +109,186 @@ class EventFlowTests(unittest.TestCase):
         self.assertEqual(self.team.get('/api/overview').status_code,403)
         self.assertEqual(self.team.post('/api/admin/teams/1/score',json={'points':100}).status_code,403)
 
+    def test_rolling_batches_release_on_first_desktop_entry(self):
+        from models import Batch
+        others=[self.new_team() for _ in range(9)]
+        batches=self.admin.get('/api/admin/batches').get_json()['batches']
+        self.assertEqual([len(b['teams']) for b in batches],[5,5])
+        self.assertEqual([b['status'] for b in batches],['RELEASED','WAITING'])
+        waiting=others[4][0]
+        self.assertIn('waiting for release',waiting.post('/api/team/rounds/1/start',json={}).get_json()['error'])
+        self.round1(others[0][0])
+        self.assertEqual(self.admin.get('/api/admin/batches').get_json()['batches'][1]['status'],'WAITING')
+        self.desktop()
+        batches=self.admin.get('/api/admin/batches').get_json()['batches']
+        self.assertEqual(batches[1]['status'],'RELEASED')
+        self.assertIsNotNone(batches[0]['triggered_at'])
+        self.assertEqual(waiting.post('/api/team/rounds/1/start',json={}).status_code,200)
+        with self.app.app_context():
+            self.assertEqual(Batch.query.count(),2)
+            self.assertEqual(ActivityLog.query.filter_by(action='BATCH_RELEASED',target='2').count(),1)
+
+    def test_open_all_rounds_keeps_waiting_batch_out_of_round_one(self):
+        with self.app.app_context():
+            event = db.session.get(Event, 1)
+            event.active = False
+            for row in Round.query:
+                row.status = 'READY' if row.number == 1 else 'LOCKED'
+            db.session.commit()
+        waiting = [self.new_team() for _ in range(5)][-1][0]
+        opened = self.admin.post('/api/rounds/start-all', json={})
+        self.assertEqual(opened.status_code, 200)
+        self.assertEqual([row['status'] for row in self.admin.get('/api/rounds').get_json()], ['ACTIVE'] * 3)
+        self.assertEqual(self.team.post('/api/team/rounds/1/start', json={}).status_code, 200)
+        blocked = waiting.post('/api/team/rounds/1/start', json={})
+        self.assertEqual(blocked.status_code, 409)
+        self.assertIn('batch is waiting', blocked.get_json()['error'])
+
+    def test_super_admin_can_delete_empty_batches_in_any_state(self):
+        waiting = self.admin.post('/api/admin/batches', json={}).get_json()
+        with self.app.app_context():
+            team = db.session.get(Team, self.credentials['team']['id'])
+            team.batch_id = waiting['id']
+            team.batch_position = 1
+            db.session.commit()
+        blocked = self.admin.delete(f"/api/admin/batches/{waiting['id']}")
+        self.assertEqual(blocked.status_code, 409)
+        empty = self.admin.post('/api/admin/batches', json={}).get_json()
+        with self.app.app_context():
+            db.session.get(Batch, empty['id']).status = 'COMPLETED'
+            db.session.commit()
+        deleted = self.admin.delete(f"/api/admin/batches/{empty['id']}")
+        self.assertEqual(deleted.status_code, 200, deleted.get_json())
+        self.assertTrue(deleted.get_json()['deleted'])
+        paused = self.admin.post('/api/admin/batches', json={}).get_json()
+        with self.app.app_context():
+            db.session.get(Batch, paused['id']).status = 'PAUSED'
+            db.session.commit()
+        self.assertEqual(self.admin.delete(f"/api/admin/batches/{paused['id']}").status_code, 200)
+
+    def test_super_admin_can_delete_unused_qr_but_preserves_assigned_qr(self):
+        with self.app.app_context():
+            unused = QRChallenge(qr_id='UNUSED-QR', secure_token='unused-token',
+                                 round_id=1, status='INACTIVE')
+            db.session.add(unused)
+            db.session.flush()
+            failed_scan = QRScanEvent(qr_id=unused.id, round_id=1, status='UNAUTHORIZED')
+            db.session.add(failed_scan)
+            db.session.commit()
+            unused_id, failed_scan_id = unused.id, failed_scan.id
+        deleted = self.admin.delete(f'/api/qrs/{unused_id}')
+        self.assertEqual(deleted.status_code, 200, deleted.get_json())
+        with self.app.app_context():
+            preserved_attempt = db.session.get(QRScanEvent, failed_scan_id)
+            self.assertIsNotNone(preserved_attempt)
+            self.assertIsNone(preserved_attempt.qr_id)
+        blocked = self.admin.delete(f'/api/qrs/{self.qr1}')
+        self.assertEqual(blocked.status_code, 409)
+        unchanged_identity = self.admin.patch(f'/api/qrs/{self.qr1}', json={
+            'qr_id': 'QR-07', 'round_id': 1, 'question_id': None,
+            'quiz_id': None, 'title': 'Assigned envelope', 'status': 'ACTIVE',
+        })
+        self.assertEqual(unchanged_identity.status_code, 200, unchanged_identity.get_json())
+
+    def test_qr_edit_updates_all_configuration_fields(self):
+        with self.app.app_context():
+            quiz = Quiz.query.first()
+            question = Question.query.filter_by(round_id=2).first()
+            qr = QRChallenge(qr_id='EDIT-ME', secure_token='edit-me-token',
+                             round_id=1, status='INACTIVE')
+            db.session.add(qr)
+            db.session.commit()
+            qr_id, quiz_id, question_id = qr.id, quiz.id, question.id
+        response = self.admin.patch(f'/api/qrs/{qr_id}', json={
+            'qr_id': 'DESTINATION-QR',
+            'round_id': 2,
+            'question_id': question_id,
+            'quiz_id': quiz_id,
+            'title': 'Updated destination',
+            'clue': 'Follow the blue sign',
+            'room': 'North Hall',
+            'status': 'ACTIVE',
+            'expires_at': '2030-01-01T12:00:00Z',
+        })
+        self.assertEqual(response.status_code, 200, response.get_json())
+        saved = response.get_json()['qr']
+        self.assertEqual(saved['qr_id'], 'DESTINATION-QR')
+        self.assertEqual(saved['round'], 2)
+        self.assertEqual(saved['question_id'], question_id)
+        self.assertEqual(saved['quiz_id'], quiz_id)
+        self.assertEqual(saved['title'], 'Updated destination')
+        self.assertEqual(saved['clue'], 'Follow the blue sign')
+        self.assertEqual(saved['room'], 'North Hall')
+        self.assertEqual(saved['status'], 'ACTIVE')
+        self.assertTrue(saved['expires_at'].startswith('2030-01-01T12:00:00'))
+
+    def test_super_admin_can_permanently_delete_team_without_history(self):
+        created = self.admin.post('/api/teams', json={
+            'team_name': 'Unused roster', 'member_1': 'Alex'
+        }).get_json()
+        team_id = created['team']['id']
+        deleted = self.admin.delete(
+            f'/api/teams/{team_id}?permanent=true',
+            headers={'Content-Type': 'application/json'},
+        )
+        self.assertEqual(deleted.status_code, 200, deleted.get_json())
+        remaining_ids = [team['id'] for team in self.admin.get('/api/teams').get_json()]
+        self.assertNotIn(team_id, remaining_ids)
+
+    def test_super_admin_can_add_assistant_without_super_admin_privileges(self):
+        created = self.admin.post('/api/admin/accounts', json={
+            'username': 'assistant', 'password': 'assistant-password-123', 'role': 'admin'
+        })
+        self.assertEqual(created.status_code, 201)
+        assistant = self.app.test_client()
+        self.assertEqual(assistant.post('/admin/login', data={
+            'username': 'assistant', 'password': 'assistant-password-123'
+        }).status_code, 302)
+        self.assertEqual(assistant.get('/api/admin/batches').status_code, 200)
+        self.assertEqual(assistant.patch('/api/admin/event', json={'active': False}).status_code, 403)
+
+    def test_batch_capacity_reassignment_and_manual_controls(self):
+        for _ in range(5):self.new_team()
+        batches=self.admin.get('/api/admin/batches').get_json()['batches']
+        first,second=batches
+        reversed_ids=[t['id'] for t in reversed(first['teams'])]
+        reordered=self.admin.post(f"/api/admin/batches/{first['id']}/reorder",json={'team_ids':reversed_ids})
+        self.assertEqual([t['id'] for t in reordered.get_json()['teams']],reversed_ids)
+        moved=second['teams'][0]['id']
+        self.assertEqual(self.admin.post(f"/api/admin/batches/{first['id']}/teams",json={'team_id':moved}).status_code,409)
+        self.assertEqual(self.admin.post(f"/api/admin/batches/{first['id']}/teams",json={'team_id':moved,'override':True}).status_code,200)
+        self.new_team()
+        self.assertEqual(self.admin.post(f"/api/admin/batches/{second['id']}/pause",json={'reason':'check'}).status_code,409)
+        judge=self.app.test_client();judge.post('/admin/login',data={'username':'judge','password':'a-secure-test-password'})
+        self.assertEqual(judge.post(f"/api/admin/batches/{second['id']}/release",json={'reason':'early'}).status_code,403)
+        self.assertEqual(self.admin.post(f"/api/admin/batches/{second['id']}/release",json={'reason':'early'}).status_code,200)
+        self.assertEqual(self.admin.post('/api/admin/batches',json={}).status_code,201)
+        self.desktop()
+        self.assertEqual(self.admin.get('/api/admin/batches').get_json()['batches'][2]['status'],'WAITING')
+        with self.app.app_context():
+            self.assertEqual(ActivityLog.query.filter_by(action='BATCH_RELEASED',target='2').count(),1)
+
+    def test_empty_next_batch_releases_when_team_is_assigned(self):
+        self.assertEqual(self.admin.post('/api/admin/batches',json={}).status_code,201)
+        self.desktop()
+        self.assertEqual(self.admin.get('/api/admin/batches').get_json()['batches'][1]['status'],'WAITING')
+        later,_=self.new_team()
+        self.assertEqual(later.get('/api/team/dashboard').get_json()['team']['batch_status'],'RELEASED')
+
+    def test_disabled_team_frees_capacity_and_pause_blocks_start(self):
+        others=[self.new_team() for _ in range(4)]
+        last_id=others[-1][1]['team']['id']
+        self.assertEqual(self.admin.put(f'/api/teams/{last_id}',json={'status':'DISQUALIFIED'}).status_code,200)
+        replacement,_=self.new_team()
+        self.assertEqual(replacement.get('/api/team/dashboard').get_json()['team']['batch_number'],1)
+        self.assertEqual(self.admin.put(f'/api/teams/{last_id}',json={'status':'READY'}).status_code,409)
+        self.assertEqual(self.admin.put(f'/api/teams/{last_id}',json={'status':'READY','batch_override':True}).status_code,200)
+        batch_id=self.admin.get('/api/admin/batches').get_json()['batches'][0]['id']
+        self.assertEqual(self.admin.post(f'/api/admin/batches/{batch_id}/pause',json={'reason':'room check'}).status_code,200)
+        self.assertIn('waiting for release',replacement.post('/api/team/rounds/1/start',json={}).get_json()['error'])
+        self.assertEqual(self.admin.post(f'/api/admin/batches/{batch_id}/resume',json={'reason':'room ready'}).status_code,200)
+        self.assertEqual(replacement.post('/api/team/rounds/1/start',json={}).status_code,200)
+
     def test_login_rate_limit_and_pin_revocation(self):
         client=self.app.test_client()
         for _ in range(10):
@@ -116,6 +296,17 @@ class EventFlowTests(unittest.TestCase):
         self.assertEqual(client.post('/team/login',data={'team_id':'INVALID','pin':'bad'}).status_code,429)
         self.admin.post(f"/api/teams/{self.credentials['team']['id']}/reset-pin",json={})
         self.assertEqual(self.team.get('/api/team/dashboard').status_code,403)
+
+    def test_login_rate_limit_cannot_be_evaded_by_changing_identity(self):
+        client = self.app.test_client()
+        source = {'REMOTE_ADDR': '192.0.2.10'}
+        for index in range(30):
+            response = client.post('/team/login', data={'team_id': f'UNKNOWN-{index}', 'pin': 'bad'},
+                                   environ_overrides=source)
+            self.assertEqual(response.status_code, 200)
+        response = client.post('/team/login', data={'team_id': 'ANOTHER', 'pin': 'bad'},
+                               environ_overrides=source)
+        self.assertEqual(response.status_code, 429)
 
     def test_member_count_validation_and_edit(self):
         self.assertEqual(self.admin.post('/api/teams',json={'team_name':'Empty'}).status_code,400)
@@ -159,29 +350,10 @@ class EventFlowTests(unittest.TestCase):
         self.assertEqual(self.admin.post('/api/rounds/1/pause',json={}).get_json()['status'],'PAUSED')
         self.assertEqual(self.scan('round1-token').status_code,409)
         self.assertEqual(self.admin.post('/api/rounds/1/resume',json={}).status_code,200)
-        self.admin.post('/api/rounds/1/end',json={})
+        self.assertEqual(self.admin.post('/api/rounds/1/end',json={}).status_code,409)
         self.assertEqual(self.scan('round2-token').status_code,409)
         with self.app.app_context():
             self.assertEqual(RoundSession.query.one().status,'ACTIVE')
-
-    def test_fixed_five_team_round_lockstep(self):
-        self.app.config['ROUND_GROUP_SIZE']=5
-        self.assertEqual(self.admin.post('/api/rounds/1/start',json={}).status_code,409)
-        teams=[self.team]
-        teams.extend(self.new_team()[0] for _ in range(4))
-        self.assertEqual(self.admin.post('/api/rounds/1/start',json={}).status_code,200)
-        sixth=self.admin.post('/api/teams',json={'team_name':'Extra Team','member_1':'Sam','assigned_qr_id':self.qr1})
-        self.assertEqual(sixth.status_code,409)
-        self.assertEqual(self.admin.post('/api/rounds/2/unlock',json={}).status_code,409)
-        self.assertEqual(self.admin.post('/api/rounds/2/start',json={}).status_code,409)
-        self.assertEqual(self.admin.post('/api/rounds/1/end',json={}).status_code,409)
-        for team in teams:
-            self.assertEqual(team.post('/api/team/rounds/1/start',json={}).status_code,200)
-            self.assertEqual(self.scan('round1-token',team).status_code,200)
-        rounds=self.admin.get('/api/rounds').get_json()
-        self.assertEqual(rounds[0]['completed_teams'],5)
-        self.assertEqual(self.admin.post('/api/rounds/1/end',json={}).status_code,200)
-        self.assertEqual(self.admin.post('/api/rounds/2/start',json={}).status_code,200)
 
     def test_quiz_persistence_submission_scoring_and_hidden_results(self):
         self.round1();self.assertEqual(self.scan('round2-token').status_code,200)
@@ -353,6 +525,14 @@ class EventFlowTests(unittest.TestCase):
                               ('EVENT_MODE','TEST'),('PUBLIC_BASE_URL','http://quest.college.example')]:
                 with patch.dict(os.environ,{key:value}):
                     with self.assertRaises(RuntimeError):Config.validate_runtime()
+
+    def test_production_restricts_host_to_public_url(self):
+        production = create_app({"TESTING": True, "APP_ENV": "production",
+                                 "PUBLIC_BASE_URL": "https://quest.college.example",
+                                 "SQLALCHEMY_DATABASE_URI": "sqlite:///:memory:"})
+        client = production.test_client()
+        self.assertEqual(client.get('/admin/login', base_url='https://quest.college.example').status_code, 200)
+        self.assertEqual(client.get('/admin/login', base_url='https://other.example').status_code, 400)
 
     def test_csrf_is_enforced(self):
         self.app.config['WTF_CSRF_ENABLED']=True

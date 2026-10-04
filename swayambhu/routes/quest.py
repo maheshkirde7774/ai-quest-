@@ -72,11 +72,12 @@ def scan_qr():
         db.session.commit()
         return jsonify(error=message, status=status), 403 if status == "UNAUTHORIZED" else 409 if challenge else 404
     number = challenge.round.number
+    released_batch = None
     try:
         if number == 2:
             begin_quiz(team, challenge)
         elif number == 3:
-            attach_desktop(team, Desktop.query.filter_by(qr_id=challenge.id, active=True).one())
+            released_batch = attach_desktop(team, Desktop.query.filter_by(qr_id=challenge.id, active=True).one())
     except EventError as error:
         db.session.rollback()
         from sqlalchemy import update
@@ -92,6 +93,8 @@ def scan_qr():
         finish_round(team, 1)
         set_score(team.id, challenge.round_id, event_config().round_1_points)
     db.session.commit()
+    if released_batch:
+        emit_activity(f"Batch {released_batch.number} released after {team.team_id} entered Round 3", "batch")
     emit_activity(f"{team.team_id} scanned {challenge.qr_id}", "scan")
     return jsonify(scan_id=scan.id, qr_id=challenge.qr_id, round=number,
                    prompt=challenge.clue or (challenge.question.prompt if number == 1 and challenge.question else ""),
@@ -190,7 +193,8 @@ def attach_desktop(team, desktop):
     team.state = "PASSWORD_CHALLENGE"
     audit("DESKTOP_ASSIGNED", team.team_id, {"desktop": desktop.name})
     db.session.flush()
-    return session
+    from services.batches import on_round_3_entry
+    return on_round_3_entry(team)
 
 
 @quest_bp.get("/desktop/<int:desktop_id>")
@@ -274,6 +278,8 @@ def submit_final():
     set_score(current_user.id, require_session(current_user, 3).round_id, sum(a.points or 0 for a in answers.values()))
     DesktopSession.query.filter_by(team_id=current_user.id).one().completed_at = utcnow()
     finish_round(current_user, 3)
+    from services.batches import mark_completed
+    mark_completed(current_user)
     audit("FINAL_SUBMITTED", current_user.team_id)
     db.session.commit()
     emit_activity(f"{current_user.team_id} completed final challenge", "final")

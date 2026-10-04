@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -14,7 +15,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'tests'))
 from app import create_app
 from extensions import db
 from flask_migrate import upgrade
-from models import Desktop, Event, FinalAssignment, PasswordAttempt, QRChallenge, Score, Team
+from models import Batch, Desktop, Event, FinalAssignment, PasswordAttempt, QRChallenge, Score, Team, utcnow
 from test_event_flow import seed_content
 
 
@@ -45,7 +46,13 @@ def simulate(count, database_url=None):
                 pin_hash=None
                 password_hash=Desktop.query.first().password_hash
                 for i in range(count):
-                    team=Team(team_id=f'AQ-{i:03d}',team_name=f'Simulation {i}',member_1='Test member',assigned_qr_id=qr1)
+                    if i % 5 == 0:
+                        batch=Batch(number=i//5+1,capacity=5,status='RELEASED' if i==0 else 'WAITING',
+                                    released_at=utcnow() if i==0 else None)
+                        db.session.add(batch)
+                        db.session.flush()
+                    team=Team(team_id=f'AQ-{i:03d}',team_name=f'Simulation {i}',member_1='Test member',assigned_qr_id=qr1,
+                              batch_id=batch.id,batch_position=i%5+1)
                     if pin_hash is None:team.set_pin('123456');pin_hash=team.pin_hash
                     else:team.pin_hash=pin_hash
                     qr=QRChallenge(qr_id=f'SIM-DESKTOP-{i}',secure_token=f'sim-desktop-{i}',round_id=3,clue='Test clue',status='ACTIVE')
@@ -53,6 +60,8 @@ def simulate(count, database_url=None):
                     db.session.add(Desktop(name=f'SIM-DESKTOP-{i}',qr_id=qr.id,password_hash=password_hash))
                 db.session.commit()
             timings=[]
+            wave_count=(count+4)//5
+            wave_triggers=[threading.Event() for _ in range(wave_count)]
             def run_team(i):
                 client=app.test_client()
                 def call(method,path,payload=None,expected=200):
@@ -72,6 +81,7 @@ def simulate(count, database_url=None):
                 call('post','/api/team/quiz/submit',{})
                 call('post','/api/team/quiz/submit',{},409)
                 call('post','/api/team/scan',{'token':f'sim-desktop-{i}'})
+                wave_triggers[i//5].set()
                 if i%2:
                     for _ in range(3):call('post','/api/team/desktop/password',{'password':'wrong'})
                 else:call('post','/api/team/desktop/password',{'password':'forty-two'})
@@ -82,8 +92,15 @@ def simulate(count, database_url=None):
                 call('post','/api/team/final/submit',{},409)
                 assert call('get','/api/team/dashboard')['score'] is None
                 assert call('get','/api/leaderboard')==[]
-            with ThreadPoolExecutor(max_workers=min(count,20)) as pool:list(pool.map(run_team,range(count)))
+            with ThreadPoolExecutor(max_workers=min(count,20)) as pool:
+                futures=[]
+                for wave in range(wave_count):
+                    if wave:
+                        assert wave_triggers[wave-1].wait(120), f'Batch {wave} never reached Round 3'
+                    futures.extend(pool.submit(run_team,i) for i in range(wave*5,min((wave+1)*5,count)))
+                for future in futures:future.result()
             with app.app_context():
+                assert all(batch.status=='COMPLETED' for batch in Batch.query)
                 assert Team.query.filter_by(status='COMPLETED').count()==count
                 assert PasswordAttempt.query.count()==count//2*3+(count-count//2)
                 assert Score.query.count()==count*3

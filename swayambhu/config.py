@@ -26,7 +26,6 @@ class Config:
     PERMANENT_SESSION_LIFETIME = timedelta(hours=8)
     PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "")
     EVENT_MODE = os.getenv("EVENT_MODE", "TEST").upper()
-    ROUND_GROUP_SIZE = int(os.getenv("ROUND_GROUP_SIZE", "5"))
     APP_ENV = os.getenv("APP_ENV", "development").lower()
     TEMPLATES_AUTO_RELOAD = APP_ENV != "production"
     MAX_CONTENT_LENGTH = 128 * 1024
@@ -43,7 +42,9 @@ class Config:
                 raise RuntimeError("Set a random SECRET_KEY of at least 32 characters in production.")
             if os.getenv("EVENT_MODE", "TEST").upper() != "PRODUCTION":
                 raise RuntimeError("Set EVENT_MODE=PRODUCTION for the real event.")
-            if not os.getenv("PUBLIC_BASE_URL", "").startswith("https://"):
+            from urllib.parse import urlsplit
+            public_url = urlsplit(os.getenv("PUBLIC_BASE_URL", ""))
+            if public_url.scheme != "https" or not public_url.hostname:
                 raise RuntimeError("Set PUBLIC_BASE_URL to the canonical HTTPS event URL.")
             if os.getenv("COOKIE_SECURE", "false").lower() != "true":
                 raise RuntimeError("Set COOKIE_SECURE=true when deployed behind HTTPS.")

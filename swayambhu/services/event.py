@@ -2,12 +2,12 @@
 import secrets
 from decimal import Decimal, InvalidOperation
 
-from flask import abort, current_app
+from flask import abort
 from werkzeug.security import check_password_hash
 
 from extensions import db
 from models import (Answer, DesktopSession, Event, FinalAnswer, FinalAssignment,
-                    Question, QuizAttempt, Round, RoundSession, Score, Team, utcnow)
+                    Question, QuizAttempt, Round, RoundSession, Score, utcnow)
 from routes.common import audit
 
 
@@ -38,48 +38,10 @@ def require_session(team, number):
     return session
 
 
-def round_group_size():
-    return current_app.config.get("ROUND_GROUP_SIZE", 5)
-
-
-def round_group_complete(number):
-    expected = round_group_size()
-    if expected == 0:
-        return True
-    teams = Team.query.order_by(Team.id).all()
-    if len(teams) != expected:
-        return False
-    sessions = {
-        session.team_id: session.status
-        for session in RoundSession.query.join(Round).filter(Round.number == number).all()
-    }
-    return all(
-        team.status in ("DISABLED", "DISQUALIFIED")
-        or sessions.get(team.id) == "COMPLETED"
-        for team in teams
-    )
-
-
-def round_can_start(number):
-    expected = round_group_size()
-    if not expected:
-        return True
-    if number > 1:
-        return round_group_complete(number - 1)
-    teams = Team.query.order_by(Team.id).all()
-    return len(teams) == expected and all(
-        team.status in ("DISABLED", "DISQUALIFIED") or team.assigned_qr_id
-        for team in teams
-    )
-
-
 def start_round(team, number):
     row = active_round(number)
-    expected = round_group_size()
-    if expected and not round_can_start(number) and number == 1:
-        raise EventError(f"Register and assign Round 1 QRs to all {expected} teams first.")
-    if expected and number > 1 and not round_can_start(number):
-        raise EventError(f"All {expected} teams must complete Round {number - 1} first.")
+    if number == 1 and (not team.batch or team.batch.status not in ("RELEASED", "IN_PROGRESS")):
+        raise EventError("Your batch is waiting for release. Please wait for the coordinator.")
     existing = RoundSession.query.filter_by(team_id=team.id, round_id=row.id).first()
     if existing:
         if existing.status == "COMPLETED":
@@ -95,6 +57,9 @@ def start_round(team, number):
         raise EventError("Ask the coordinator to assign your envelope QR.")
     session = RoundSession(team_id=team.id, round_id=row.id)
     db.session.add(session)
+    if number == 1 and team.batch.status == "RELEASED":
+        team.batch.status = "IN_PROGRESS"
+        audit("BATCH_IN_PROGRESS", str(team.batch.number), {"first_team": team.team_id})
     team.status = "ACTIVE"
     team.state = f"ROUND_{number}_ACTIVE"
     audit("ROUND_STARTED", team.team_id, {"round": number})

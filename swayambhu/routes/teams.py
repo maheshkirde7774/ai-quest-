@@ -1,16 +1,28 @@
 from datetime import timezone
 
-from flask import Blueprint, current_app, flash, jsonify, redirect, render_template, request, url_for
+from flask import Blueprint, flash, jsonify, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 from sqlalchemy import func
 
 from extensions import db
-from models import Answer, FinalResult, Round, RoundSession, ScanLog, Score, Team, TeamMember, utcnow
+from models import (Answer, Batch, DesktopSession, FinalAssignment, FinalResult,
+                    QRScanEvent, QuizAttempt, Round, RoundSession, ScanLog, Score,
+                    Team, TeamMember, utcnow)
 from routes.common import admin_required, audit, emit_activity, emit_leaderboard, iso_utc, team_required
 from utils.security import new_team_pin
 
 teams_bp = Blueprint("teams", __name__)
 TEAM_STATUSES = {"READY", "ACTIVE", "COMPLETED", "DISQUALIFIED", "DISABLED"}
+
+
+def _batch_position(values):
+    value = values.get("batch_position")
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool) or not str(value).isdigit() or int(value) < 1:
+        from services.event import EventError
+        raise EventError("Batch position must be a positive whole number.", 400)
+    return int(value)
 
 
 def _team_payload(team):
@@ -22,6 +34,10 @@ def _team_payload(team):
         "member_2": team.member_2,
         "member_3": team.member_3,
         "status": team.status,
+        "batch_id": team.batch_id,
+        "batch_number": team.batch.number if team.batch else None,
+        "batch_status": team.batch.status if team.batch else "UNASSIGNED",
+        "batch_position": team.batch_position,
         "created_at": iso_utc(team.created_at),
         "state": team.state,
         "assigned_qr_id": team.assigned_qr_id,
@@ -73,9 +89,6 @@ def list_teams():
 @admin_required
 def create_team():
     data = request.get_json(silent=True) or request.form
-    group_size = current_app.config.get("ROUND_GROUP_SIZE", 5)
-    if group_size and Team.query.count() >= group_size:
-        return jsonify(error=f"This event is configured for exactly {group_size} teams."), 409
     name = str(data.get("team_name", "")).strip()
     if not name or len(name) > 120:
         return jsonify(error="Team name is required (120 characters maximum)."), 400
@@ -105,6 +118,12 @@ def create_team():
         if value
     ]
     db.session.add(team)
+    db.session.flush()
+    from services.batches import assign
+    batch = db.session.get(Batch, int(data["batch_id"])) if data.get("batch_id") else None
+    if data.get("batch_id") and not batch:
+        return jsonify(error="Batch not found."), 404
+    assign(team, batch, _batch_position(data))
     audit("Team created", team.team_id)
     db.session.commit()
     emit_activity(f"{team.team_id} team created", "team")
@@ -122,10 +141,25 @@ def update_or_delete_team(team_pk):
     if event_config().results_locked:
         return jsonify(error="Results are locked."), 409
     if request.method == "DELETE":
+        if request.args.get("permanent", "").lower() == "true":
+            if current_user.role != "super-admin":
+                return jsonify(error="Super-admin access is required to permanently delete a team."), 403
+            progress_models = (RoundSession, ScanLog, QRScanEvent, Answer, QuizAttempt,
+                               DesktopSession, FinalAssignment, Score, FinalResult)
+            if any(model.query.filter_by(team_id=team.id).first() for model in progress_models):
+                return jsonify(error="This team has recorded activity or results. Archive it to preserve its history."), 409
+            audit("TEAM_PERMANENTLY_DELETED", team.team_id)
+            db.session.delete(team)
+            db.session.commit()
+            emit_activity(f"{team.team_id} permanently deleted", "team")
+            emit_leaderboard()
+            return jsonify(ok=True, deleted=True)
         if FinalResult.query.filter_by(team_id=team.id).first():
             return jsonify(error="Teams included in generated results cannot be deleted."), 409
         audit("TEAM_DISABLED", team.team_id, {"reason": "archived"})
         team.status = "DISABLED"
+        from services.batches import mark_completed
+        mark_completed(team)
         db.session.commit()
         emit_leaderboard()
         return jsonify(ok=True)
@@ -159,10 +193,33 @@ def update_or_delete_team(team_pk):
             return jsonify(error="Invalid team status."), 400
         if status in ("ACTIVE", "COMPLETED") and status != team.status:
             return jsonify(error="Progress is derived from challenge records. Use audited advance for exceptions."), 409
+        if status == "READY" and team.status in ("DISABLED", "DISQUALIFIED") and team.batch:
+            from services.batches import active_count
+            if team.batch.status == "COMPLETED":
+                return jsonify(error="A completed batch cannot be reopened through team editing."), 409
+            if active_count(team.batch, exclude=team.id) >= team.batch.capacity:
+                if data.get("batch_override") is not True:
+                    return jsonify(error="Batch is full. Reassign this team or request a super-admin override."), 409
+                if current_user.role != "super-admin":
+                    return jsonify(error="Super-admin override required."), 403
+                audit("BATCH_CAPACITY_OVERRIDDEN", team.team_id, {"batch": team.batch.number})
         team.status = status
         if status == "DISQUALIFIED":
             team.state = "DISQUALIFIED"
+        elif status == "READY" and team.state == "DISQUALIFIED" and not team.round_sessions:
+            team.state = "REGISTERED"
+    if "batch_id" in data or "batch_position" in data:
+        from services.batches import assign
+        batch = db.session.get(Batch, int(data["batch_id"])) if data.get("batch_id") else team.batch
+        if not batch:
+            return jsonify(error="Batch not found."), 404
+        assign(team, batch, _batch_position(data))
     audit("Team edited", team.team_id)
+    from services.batches import mark_completed
+    mark_completed(team)
+    if team.batch:
+        from services.batches import release_if_predecessor_triggered
+        release_if_predecessor_triggered(team.batch)
     db.session.commit()
     emit_leaderboard()
     return jsonify(team=_team_payload(team))
@@ -188,6 +245,10 @@ def team_timeline(team_pk):
     if not team:
         return jsonify(error="Team not found."), 404
     events = []
+    if team.batch and team.batch.released_at:
+        events.append({"at": team.batch.released_at, "label": f"Batch {team.batch.number} released"})
+    if team.batch and team.batch.triggered_at:
+        events.append({"at": team.batch.triggered_at, "label": f"Batch {team.batch.number} triggered next release"})
     for session in RoundSession.query.filter_by(team_id=team.id).all():
         events.append({"at": session.started_at, "label": f"Round {session.round.number} started"})
         if session.ended_at:
