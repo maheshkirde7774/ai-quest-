@@ -1,8 +1,8 @@
 (() => {
   const csrf = document.querySelector('meta[name="csrf-token"]').content;
   const root = document.getElementById('toast-root');
-  const views = ['overview', 'teams', 'qrs', 'questions', 'rounds', 'monitoring', 'scores', 'leaderboard', 'results', 'activity', 'settings', 'operations'];
-  const titles = {overview:'Dashboard',teams:'Teams',qrs:'QR Management',questions:'Questions',rounds:'Round Control',monitoring:'Live Monitoring',scores:'Scores',leaderboard:'Leaderboard',results:'Final Results',activity:'Activity Logs',settings:'Settings',operations:'Event Operations'};
+  const views = ['overview', 'teams', 'batches', 'qrs', 'questions', 'rounds', 'monitoring', 'scores', 'leaderboard', 'results', 'activity', 'settings', 'operations'];
+  const titles = {overview:'Dashboard',teams:'Teams',batches:'Batches',qrs:'QR Management',questions:'Questions',rounds:'Round Control',monitoring:'Live Monitoring',scores:'Scores',leaderboard:'Leaderboard',results:'Final Results',activity:'Activity Logs',settings:'Settings',operations:'Event Operations'};
   let chart;
   const connectionState=document.getElementById('connection-status')||document.querySelector('.system-state');
   if(connectionState){connectionState.id='connection-status';connectionState.innerHTML='<i class="live-dot"></i><span>Connecting…</span>';}
@@ -18,7 +18,9 @@
     const node = document.createElement('div'); node.className = `toast${error ? ' error' : ''}`; node.textContent = message; root.append(node); setTimeout(() => node.remove(), 4000);
   };
   async function api(path, options={}) {
-    const response = await fetch(path, {credentials:'same-origin', ...options, headers:{'Content-Type':'application/json','X-CSRFToken':csrf,...(options.headers || {})}});
+    const headers = {'X-CSRFToken':csrf,...(options.headers || {})};
+    if (options.body !== undefined && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
+    const response = await fetch(path, {credentials:'same-origin', ...options, headers});
     const data = response.status === 204 ? {} : await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
     return data;
@@ -48,6 +50,7 @@
     if (name === 'operations') window.loadOperations?.();
     if (name === 'overview') loadOverview();
     if (name === 'teams') loadTeams();
+    if (name === 'batches') loadBatches();
     if (name === 'qrs') loadQrs();
     if (name === 'questions') loadQuestions();
     if (name === 'rounds') loadRounds();
@@ -56,7 +59,31 @@
     if (name === 'leaderboard') loadLeaderboard();
     if (name === 'results') loadResults();
     if (name === 'activity') loadActivity();
+    if (name === 'settings') loadManagingTeam();
   }
+  async function loadManagingTeam() {
+    const host = document.getElementById('managing-team-list');
+    if (!host) return;
+    try {
+      const accounts = await api('/api/admin/accounts');
+      host.innerHTML = accounts.map(account => `<p><strong>${esc(account.username)}</strong> · ${esc(account.role)} · ${account.active?'Active':'Disabled'}${account.role==='admin'?` <button class="text-button" data-assistant-toggle="${account.id}" data-active="${account.active}">${account.active?'Disable':'Enable'}</button>`:''}</p>`).join('') || '<p>No managing team members yet.</p>';
+      host.querySelectorAll('[data-assistant-toggle]').forEach(button => button.onclick = async () => {
+        try {
+          await api(`/api/admin/accounts/${button.dataset.assistantToggle}`, {method:'PATCH',body:JSON.stringify({active:button.dataset.active!=='true'})});
+          toast('Managing team member updated'); loadManagingTeam();
+        } catch (error) { toast(error.message, true); }
+      });
+    } catch (error) { toast(error.message, true); }
+  }
+  const assistantForm = document.getElementById('assistant-form');
+  if (assistantForm) assistantForm.onsubmit = async event => {
+    event.preventDefault();
+    try {
+      const values = Object.fromEntries(new FormData(assistantForm));
+      await api('/api/admin/accounts', {method:'POST',body:JSON.stringify({...values,role:'admin'})});
+      assistantForm.reset(); toast('Assistant added'); loadManagingTeam();
+    } catch (error) { toast(error.message, true); }
+  };
   document.querySelectorAll('.nav-item').forEach(item => item.addEventListener('click', () => showView(item.dataset.view)));
   document.querySelectorAll('[data-goto]').forEach(item => item.addEventListener('click', () => showView(item.dataset.goto)));
   document.getElementById('menu-toggle').onclick = () => document.getElementById('sidebar').classList.toggle('open');
@@ -74,6 +101,7 @@
       document.getElementById('stat-scans').textContent = data.total_scans;
       [1,2,3].forEach(n=>document.getElementById(`stat-round-${n}`).textContent=data.teams_by_round[String(n)]||0);
       document.getElementById('current-round').textContent = data.current_round;
+      document.getElementById('overview-batches').textContent=(data.batches||[]).map(b=>`Batch ${b.number}: ${b.status}${b.triggered?' · next batch triggered':''}`).join('   |   ') || 'No batches yet';
       document.getElementById('rounds-done').textContent = `${data.completed_rounds} / 3 complete`;
       document.getElementById('overview-rounds').innerHTML = data.rounds.map(round => `<div class="round-row ${round.status==='ACTIVE'?'active':''}"><span class="round-number">0${round.number}</span><div><strong>${esc(round.name)}</strong><small>${status(round.status)}</small></div></div>`).join('');
       document.getElementById('overview-activity').innerHTML = data.activity.length ? data.activity.map(item => `<div class="activity-item"><time>${date(item.timestamp)}</time><span>${esc(item.action)} · ${esc(item.target)}</span></div>`).join('') : '<div class="empty-state">No activity recorded yet.</div>';
@@ -95,24 +123,59 @@
       const term = document.getElementById('team-search').value.toLowerCase();
       const rows = teamsCache.filter(team => `${team.team_id} ${team.team_name}`.toLowerCase().includes(term));
       document.getElementById('team-count').textContent = `${rows.length} teams`;
-      document.getElementById('teams-table').innerHTML = rows.length ? rows.map(team => `<tr><td class="team-cell">${esc(team.team_id)}</td><td>${esc(team.team_name)}</td><td>${[team.member_1,team.member_2,team.member_3].filter(Boolean).map(esc).join(', ') || '—'}</td><td><b>${team.score}</b></td><td><select class="status-select" data-team-status="${team.id}">${['READY','ACTIVE','COMPLETED','DISQUALIFIED','DISABLED'].map(value=>`<option ${team.status===value?'selected':''}>${value}</option>`).join('')}</select></td><td><div class="row-actions"><button class="text-button" data-edit-team="${team.id}">Edit</button><button class="text-button" data-timeline="${team.id}">Timeline</button><button class="text-button" data-reset-pin="${team.id}">Reset PIN</button><button class="text-button danger-text" data-delete-team="${team.id}">Archive</button></div></td></tr>`).join('') : '<tr><td colspan="6" class="empty-cell">No teams match this search.</td></tr>';
+      const canDeletePermanently = document.body.dataset.adminRole === 'super-admin';
+      document.getElementById('teams-table').innerHTML = rows.length ? rows.map(team => `<tr><td class="team-cell">${esc(team.team_id)}<small style="display:block">Batch ${esc(team.batch_number||'—')} · ${esc(team.batch_status)}</small></td><td>${esc(team.team_name)}</td><td>${[team.member_1,team.member_2,team.member_3].filter(Boolean).map(esc).join(', ') || '—'}</td><td><b>${team.score}</b></td><td><select class="status-select" data-team-status="${team.id}">${['READY','ACTIVE','COMPLETED','DISQUALIFIED','DISABLED'].map(value=>`<option ${team.status===value?'selected':''}>${value}</option>`).join('')}</select></td><td><div class="row-actions"><button class="text-button" data-edit-team="${team.id}">Edit</button><button class="text-button" data-timeline="${team.id}">Timeline</button><button class="text-button" data-reset-pin="${team.id}">Reset PIN</button><button class="text-button danger-text" data-delete-team="${team.id}">Archive</button>${canDeletePermanently?`<button class="text-button danger-text" data-purge-team="${team.id}">Delete</button>`:''}</div></td></tr>`).join('') : '<tr><td colspan="6" class="empty-cell">No teams match this search.</td></tr>';
       bindTeamActions();
     } catch (error) { toast(error.message, true); }
   }
   document.getElementById('team-search').addEventListener('input', loadTeams);
-  function teamForm(team={}) {
-    modal(team.id ? `Edit ${team.team_id}` : 'Add team', `<form id="team-form" class="form-panel"><label>Team name<input name="team_name" required maxlength="120" value="${esc(team.team_name||'')}"></label><div class="form-grid two"><label>Member 1<input name="member_1" required maxlength="100" value="${esc(team.member_1||'')}"></label><label>Member 2<input name="member_2" maxlength="100" value="${esc(team.member_2||'')}"></label></div><label>Assigned Round 1 QR ID<input name="assigned_qr_id" type="number" min="1" value="${esc(team.assigned_qr_id||'')}"></label><label>Member 3<input name="member_3" maxlength="100" value="${esc(team.member_3||'')}"></label>${team.id?'':'<label>Login PIN · optional, generated if blank<input name="login_pin" inputmode="numeric" minlength="4" maxlength="12"></label>'}<button class="button primary" type="submit">${team.id?'Save changes':'Create team'}</button></form>`, host => {
+  async function teamForm(team={}) {
+    try {
+      const [qrs, batchData] = await Promise.all([api('/api/qrs'), api('/api/admin/batches')]);
+      const qrOptions = qrs.filter(qr => qr.round === 1 && qr.status !== 'ARCHIVED').map(qr => `<option value="${qr.id}" ${qr.id===team.assigned_qr_id?'selected':''}>${esc(qr.qr_id)} · ${esc(qr.title || qr.room || 'Round 1')}</option>`).join('');
+      const batchOptions = batchData.batches.filter(batch => batch.id === team.batch_id || !['COMPLETED','PAUSED'].includes(batch.status)).map(batch => `<option value="${batch.id}" ${batch.id===team.batch_id?'selected':''}>Batch ${batch.number} · ${esc(batch.status)} (${batch.teams.length}/${batch.capacity})</option>`).join('');
+      modal(team.id ? `Edit ${team.team_id}` : 'Add team', `<form id="team-form" class="form-panel"><label>Team name<input name="team_name" required maxlength="120" value="${esc(team.team_name||'')}"></label><div class="form-grid two"><label>Member 1<input name="member_1" required maxlength="100" value="${esc(team.member_1||'')}"></label><label>Member 2<input name="member_2" maxlength="100" value="${esc(team.member_2||'')}"></label></div><label>Member 3<input name="member_3" maxlength="100" value="${esc(team.member_3||'')}"></label><label>Assigned Round 1 QR<select name="assigned_qr_id"><option value="">Select an envelope QR</option>${qrOptions}</select></label><label>Batch<select name="batch_id"><option value="">${team.id?'Keep current batch':'Assign automatically'}</option>${batchOptions}</select></label><label>Position in batch<input name="batch_position" type="number" min="1" value="${esc(team.batch_position||'')}"></label><p class="subtle">Team members can be edited later. Batch and envelope QR changes are allowed only before the team starts.</p>${team.id?'':'<label>Login PIN · optional, generated if blank<input name="login_pin" inputmode="numeric" minlength="4" maxlength="12"></label>'}<button class="button primary" type="submit">${team.id?'Save changes':'Create team'}</button></form>`, host => {
+      host.querySelector('[name=batch_id]').onchange = () => { host.querySelector('[name=batch_position]').value = ''; };
       host.querySelector('#team-form').onsubmit = async event => {
-        event.preventDefault(); const form = Object.fromEntries(new FormData(event.currentTarget)); if(!form.assigned_qr_id)delete form.assigned_qr_id;
-        try { const data = await api(team.id ? `/api/teams/${team.id}` : '/api/teams', {method:team.id?'PUT':'POST',body:JSON.stringify(form)}); host.innerHTML=''; toast(team.id?'Team updated':`Created ${data.team.team_id} · PIN ${data.login_pin}`); loadTeams(); }
+        event.preventDefault(); const form = Object.fromEntries(new FormData(event.currentTarget)); for(const field of ['assigned_qr_id','batch_id','batch_position'])if(!form[field])delete form[field];if(team.id){if(Number(form.batch_id)===team.batch_id)delete form.batch_id;if(Number(form.batch_position)===team.batch_position)delete form.batch_position;}
+        try { const data = await api(team.id ? `/api/teams/${team.id}` : '/api/teams', {method:team.id?'PUT':'POST',body:JSON.stringify(form)}); host.innerHTML=''; toast(team.id?'Team updated':`Created ${data.team.team_id} · PIN ${data.login_pin}`); loadTeams(); loadBatches(); }
         catch(error) { toast(error.message,true); }
       };
     });
+    } catch (error) { toast(error.message, true); }
   }
   document.getElementById('add-team').onclick = () => teamForm();
+  let batchesCache=[];
+  async function loadBatches() {
+    try {
+      const data=await api('/api/admin/batches');
+      batchesCache=data.batches;
+      const isSuperAdmin = document.body.dataset.adminRole === 'super-admin';
+      document.getElementById('batch-list').innerHTML=data.batches.length?data.batches.map(batch=>{const deletable=!batch.teams.length;return `<article class="panel form-panel"><div class="panel-heading"><h3>Batch ${batch.number} · ${esc(batch.status)}</h3><span>${batch.teams.filter(t=>!['DISABLED','DISQUALIFIED'].includes(t.status)).length} / ${batch.capacity} active teams</span></div><p>Released: ${date(batch.released_at)} · Round 3 trigger: ${date(batch.triggered_at)}</p><div>${batch.teams.map((t,index)=>`<p>${esc(t.position)}. ${esc(t.team_id)} · ${esc(t.state)} <button class="text-button" data-batch-move="${batch.id}:${index}:-1" ${index===0?'disabled':''} aria-label="Move ${esc(t.team_id)} up">↑</button><button class="text-button" data-batch-move="${batch.id}:${index}:1" ${index===batch.teams.length-1?'disabled':''} aria-label="Move ${esc(t.team_id)} down">↓</button></p>`).join('')||'No teams assigned yet'}</div><div class="button-row">${batch.status==='WAITING'?`<button class="button secondary" data-batch-action="release" data-batch-id="${batch.id}">Release now</button>`:''}${['RELEASED','IN_PROGRESS'].includes(batch.status)?`<button class="button secondary" data-batch-action="pause" data-batch-id="${batch.id}">Pause</button>`:''}${batch.status==='PAUSED'?`<button class="button secondary" data-batch-action="resume" data-batch-id="${batch.id}">Resume</button>`:''}${isSuperAdmin?`<button class="button secondary danger-text" data-batch-delete="${batch.id}" ${deletable?'':'disabled title="Move every team out of this batch before deleting it."'}>Delete batch</button>`:''}</div></article>`}).join(''):'<div class="empty-state">Create teams to generate the first batch.</div>';
+      document.querySelectorAll('[data-batch-delete]:not(:disabled)').forEach(button=>button.onclick=async()=>{if(!confirm('Delete this empty batch? Its audit history remains available.'))return;try{await api(`/api/admin/batches/${button.dataset.batchDelete}`,{method:'DELETE'});toast('Batch deleted');loadBatches();}catch(error){toast(error.message,true);}});
+      document.querySelectorAll('[data-batch-action]').forEach(button=>button.onclick=async()=>{const reason=prompt(`Reason to ${button.dataset.batchAction} batch?`);if(!reason)return;try{await api(`/api/admin/batches/${button.dataset.batchId}/${button.dataset.batchAction}`,{method:'POST',body:JSON.stringify({reason})});loadBatches();loadTeams();}catch(error){toast(error.message,true);}});
+      batchesCache.forEach(batch => batch.teams.forEach((team, index) => {
+        const row = document.querySelector(`[data-batch-move="${batch.id}:${index}:-1"]`)?.parentElement;
+        if (!row) return;
+        const edit = document.createElement('button');
+        edit.type = 'button'; edit.className = 'text-button'; edit.textContent = 'Edit team / batch';
+        edit.onclick = async () => {
+          try {
+            const teams = await api('/api/teams');
+            const detail = teams.find(item => item.id === team.id);
+            if (detail) await teamForm(detail);
+          } catch (error) { toast(error.message, true); }
+        };
+        row.append(edit);
+      }));
+      document.querySelectorAll('[data-batch-move]').forEach(button=>button.onclick=async()=>{const [id,index,step]=button.dataset.batchMove.split(':').map(Number);const batch=batchesCache.find(b=>b.id===id);const ids=batch.teams.map(t=>t.id);[ids[index],ids[index+step]]=[ids[index+step],ids[index]];try{await api(`/api/admin/batches/${id}/reorder`,{method:'POST',body:JSON.stringify({team_ids:ids})});loadBatches();}catch(error){toast(error.message,true);}});
+    }catch(error){toast(error.message,true);}
+  }
+  document.getElementById('add-batch').onclick=async()=>{try{await api('/api/admin/batches',{method:'POST',body:'{}'});loadBatches();}catch(error){toast(error.message,true);}};
   function bindTeamActions() {
     document.querySelectorAll('[data-edit-team]').forEach(button => button.onclick = () => teamForm(teamsCache.find(team => team.id === Number(button.dataset.editTeam))));
     document.querySelectorAll('[data-delete-team]').forEach(button => button.onclick = async () => { if(!confirm('Archive this team?'))return; try{await api(`/api/teams/${button.dataset.deleteTeam}`,{method:'DELETE'});toast('Team archived');loadTeams();}catch(error){toast(error.message,true);} });
+    document.querySelectorAll('[data-purge-team]').forEach(button => button.onclick = async () => { if(!confirm('Permanently delete this team? This is available only when the team has no recorded event activity or results.'))return; try{await api(`/api/teams/${button.dataset.purgeTeam}?permanent=true`,{method:'DELETE'});toast('Team permanently deleted');loadTeams();loadBatches();}catch(error){toast(error.message,true);} });
     document.querySelectorAll('[data-reset-pin]').forEach(button => button.onclick = async () => { try{const data=await api(`/api/teams/${button.dataset.resetPin}/reset-pin`,{method:'POST',body:'{}'});modal('New team PIN',`<p>Share this one-time display with the team:</p><p><strong>${esc(data.team_id)} · ${esc(data.login_pin)}</strong></p>`);}catch(error){toast(error.message,true);} });
     document.querySelectorAll('[data-timeline]').forEach(button => button.onclick = async () => { try{const data=await api(`/api/teams/${button.dataset.timeline}/timeline`);modal(`${data.team.team_id} · ${data.team.state}`,`<p>Members: ${[data.team.member_1,data.team.member_2,data.team.member_3].filter(Boolean).map(esc).join(', ')}</p><p>Scores: ${esc(JSON.stringify(data.scores))} · Bonus ${data.team.bonus} · Penalty ${data.team.penalty}</p><p>Progress: ${data.rounds.map(r=>`Round ${r.number}: ${esc(r.status)}`).join(' · ')}</p>`+(data.timeline.length?`<ul class="timeline">${data.timeline.map(item=>`<li><time>${date(item.at)}</time>${esc(item.label)}</li>`).join('')}</ul>`:'<div class="empty-state">No events recorded for this team.</div>'));}catch(error){toast(error.message,true);} });
     document.querySelectorAll('[data-team-status]').forEach(select => select.onchange = async () => {try{await api(`/api/teams/${select.dataset.teamStatus}`,{method:'PUT',body:JSON.stringify({status:select.value})});toast('Team status updated');loadTeams();}catch(error){toast(error.message,true);loadTeams();}});
@@ -122,6 +185,50 @@
       const term=document.getElementById('qr-search').value.toLowerCase();
       const rows = (await api('/api/qrs')).filter(qr=>`${qr.qr_id} ${qr.title} ${qr.room}`.toLowerCase().includes(term));
       document.getElementById('qrs-table').innerHTML = rows.length ? rows.map(qr => `<tr><td class="team-cell">${esc(qr.qr_id)}</td><td>R${qr.round} · ${esc(qr.round_name)}</td><td>${esc(qr.room || 'Unassigned')}</td><td>${status(qr.status)}</td><td>${date(qr.created_at)}</td><td>${date(qr.activated_at)}</td><td>${qr.scans}</td><td><div class="row-actions"><button class="text-button" data-qr-image="${qr.id}">Download</button><button class="text-button" data-qr-scans="${qr.id}">Scans</button><button class="text-button" data-qr-action="${qr.status==='ACTIVE'?'deactivate':'activate'}" data-qr-id="${qr.id}">${qr.status==='ACTIVE'?'Deactivate':'Activate'}</button><button class="text-button danger-text" data-qr-action="delete" data-qr-id="${qr.id}">Archive</button></div></td></tr>`).join('') : '<tr><td colspan="8" class="empty-cell">Generate your first QR challenge.</td></tr>';
+      rows.forEach(qr => {
+        const controls = document.querySelector(`[data-qr-image="${qr.id}"]`)?.parentElement;
+        if (!controls) return;
+        const purge = document.createElement('button');
+        purge.type = 'button'; purge.className = 'text-button danger-text'; purge.textContent = 'Delete';
+        purge.dataset.qrPurge = qr.id;
+        if (document.body.dataset.adminRole === 'super-admin') controls.append(purge);
+        if (qr.status === 'ARCHIVED') controls.querySelectorAll('[data-qr-action]').forEach(button => button.remove());
+        const edit = document.createElement('button');
+        edit.type = 'button'; edit.className = 'text-button'; edit.textContent = 'Edit';
+        edit.onclick = async () => {
+          try {
+            const [quizzes, questions] = await Promise.all([api('/api/admin/quizzes'),api('/api/admin/questions')]);
+            const questionOptions = (roundId, selected) => '<option value="">No attached question</option>' + questions.filter(question=>question.round===Number(roundId)).map(question=>`<option value="${question.id}" ${question.id===selected?'selected':''}>R${question.round} · ${esc(question.prompt.slice(0,90))}</option>`).join('');
+            const quizOptions = selected => '<option value="">Select a quiz</option>' + quizzes.map(quiz=>`<option value="${quiz.id}" ${quiz.id===selected?'selected':''}>${esc(quiz.title)}</option>`).join('');
+            const expiry = qr.expires_at ? new Date(new Date(qr.expires_at).getTime()-new Date(qr.expires_at).getTimezoneOffset()*60000).toISOString().slice(0,16) : '';
+            modal(`Edit QR · ${qr.qr_id}`, `<form id="edit-qr" class="form-panel"><div class="form-grid two"><label>QR number<input name="qr_id" required maxlength="30" pattern="[A-Za-z0-9-]+" value="${esc(qr.qr_id)}"></label><label>Round<select name="round_id" required><option value="1" ${qr.round===1?'selected':''}>Round 1 · QR Riddle</option><option value="2" ${qr.round===2?'selected':''}>Round 2 · Quiz</option><option value="3" ${qr.round===3?'selected':''}>Round 3 · Desktop</option></select></label></div><label>Title<input name="title" maxlength="120" value="${esc(qr.title)}"></label><label>Clue / instructions<textarea name="clue" maxlength="2000" rows="4">${esc(qr.clue)}</textarea></label><div class="form-grid two"><label>Room / destination<input name="room" maxlength="120" value="${esc(qr.room)}"></label><label>Question attached to QR<select name="question_id">${questionOptions(qr.round,qr.question_id)}</select></label></div><label id="edit-qr-quiz-field" ${qr.round===2?'':'hidden'}>Round 2 quiz<select name="quiz_id" ${qr.round===2?'required':''}>${quizOptions(qr.quiz_id)}</select></label><div class="form-grid two"><label>QR status<select name="status">${['ACTIVE','INACTIVE','ARCHIVED'].map(value=>`<option value="${value}" ${value===qr.status?'selected':''}>${value}</option>`).join('')}</select></label><label>Expires at · optional<input name="expires_at" type="datetime-local" value="${expiry}"></label></div><div class="subtle">Created ${date(qr.created_at)} · Updated ${date(qr.updated_at)} · Activated ${date(qr.activated_at)} · Deactivated ${date(qr.deactivated_at)} · ${qr.scans} recorded scans. Secure token is hidden.</div><p class="subtle">Changing round, QR number, attached question, or quiz is blocked while assigned to a team or desktop. QR records with scans are read-only.</p><button class="button primary" type="submit">Save all QR details</button></form>`, host => {
+              const form = host.querySelector('#edit-qr');
+              const roundSelect = form.elements.round_id;
+              const questionSelect = form.elements.question_id;
+              const quizField = host.querySelector('#edit-qr-quiz-field');
+              const quizSelect = form.elements.quiz_id;
+              roundSelect.onchange = () => {
+                questionSelect.innerHTML = questionOptions(roundSelect.value,'');
+                const isQuizRound = Number(roundSelect.value) === 2;
+                quizField.hidden = !isQuizRound;
+                quizSelect.required = isQuizRound;
+                if (!isQuizRound) quizSelect.value = '';
+              };
+            form.onsubmit = async event => {
+              event.preventDefault();
+              try { const values=Object.fromEntries(new FormData(form)); if(!values.question_id)values.question_id=null; if(!values.quiz_id)values.quiz_id=null; if(values.expires_at)values.expires_at=new Date(values.expires_at).toISOString(); else values.expires_at=null; await api(`/api/qrs/${qr.id}`, {method:'PATCH',body:JSON.stringify(values)}); host.innerHTML=''; toast('QR details updated'); loadQrs(); }
+              catch (error) { toast(error.message, true); }
+            };
+            });
+          } catch (error) { toast(error.message, true); }
+        };
+        controls.prepend(edit);
+      });
+      document.querySelectorAll('[data-qr-purge]').forEach(button => button.onclick = async () => {
+        if (!confirm('Permanently delete this QR? This is allowed only when it has no scan history and is not assigned to a team or desktop.')) return;
+        try { await api(`/api/qrs/${button.dataset.qrPurge}`, {method:'DELETE'}); toast('QR permanently deleted'); loadQrs(); }
+        catch (error) { toast(error.message, true); }
+      });
       document.querySelectorAll('[data-qr-action]').forEach(button => button.onclick = async () => {try{await api(`/api/qrs/${button.dataset.qrId}/${button.dataset.qrAction}`,{method:'POST',body:'{}'});toast(`QR ${button.dataset.qrAction}d`);loadQrs();}catch(error){toast(error.message,true);}});
       document.querySelectorAll('[data-qr-image]').forEach(button => button.onclick = () => {const image=`/api/qrs/${button.dataset.qrImage}/image`;modal('QR challenge',`<img class="qr-preview" src="${image}" alt="QR challenge"><p class="subtle">This QR contains an opaque secure token. Correct answers are never encoded in the image.</p><a class="button primary" href="${image}" download>Download PNG</a>`);});
       document.querySelectorAll('[data-qr-scans]').forEach(button => button.onclick = async () => {try{const scans=await api(`/api/qrs/${button.dataset.qrScans}/scans`);modal('QR scan history',scans.length?`<div class="table-wrap"><table><thead><tr><th>Team</th><th>Scan time</th><th>Status</th><th>IP address</th></tr></thead><tbody>${scans.map(scan=>`<tr><td>${esc(scan.team_id)} · ${esc(scan.team_name)}</td><td>${date(scan.scan_time)}</td><td>${status(scan.answer_status)}</td><td>${esc(scan.ip_address)}</td></tr>`).join('')}</tbody></table></div>`:'<div class="empty-state">No scans recorded for this QR.</div>');}catch(error){toast(error.message,true);}});
@@ -135,7 +242,7 @@
       document.getElementById('questions-list').innerHTML = rows.length ? rows.map(q => `<div class="question-row"><strong>R${q.round} · ${esc(q.prompt)}</strong><small>${q.points} pts · ${q.time_limit}s · key ${esc(q.correct_answer)} <button class="text-button" data-question-edit="${q.id}">Edit</button> <button class="text-button" data-question-toggle="${q.id}" data-active="${q.active}">${q.active?'Deactivate':'Activate'}</button> <button class="text-button danger-text" data-question-delete="${q.id}">Delete</button></small></div>`).join('') : '<div class="empty-state">No questions added yet.</div>';
       document.querySelectorAll('[data-question-edit]').forEach(button => button.onclick = () => {
         const question = rows.find(item => item.id === Number(button.dataset.questionEdit));
-        modal('Edit question', `<form id="edit-question" class="form-panel"><label>Question<textarea name="prompt" maxlength="2000" required rows="3">${esc(question.prompt)}</textarea></label><div class="form-grid two">${['a','b','c','d'].map(key => `<label>Option ${key.toUpperCase()}<input name="option_${key}" value="${esc(question[`option_${key}`])}" maxlength="300"></label>`).join('')}</div><div class="form-grid two"><label>Correct answer / key<input name="correct_answer" maxlength="300" required value="${esc(question.correct_answer)}"></label><label>Points<input name="points" type="number" min="0" max="10000" value="${question.points}"></label><label>Time limit · seconds<input name="time_limit" type="number" min="5" max="3600" value="${question.time_limit}"></label></div><button class="button primary" type="submit">Save changes</button></form>`, host => {
+        modal('Edit question', `<form id="edit-question" class="form-panel"><label>Question<textarea name="prompt" maxlength="2000" required rows="3">${esc(question.prompt)}</textarea></label><div class="form-grid two"><label>Type<select name="kind">${['MCQ','TRUE/FALSE','SHORT ANSWER','NUMERICAL','LOGICAL','CODE OUTPUT','AI/TECHNICAL'].map(kind=>`<option value="${kind}" ${kind===question.kind?'selected':''}>${kind}</option>`).join('')}</select></label><label>Order<input name="position" type="number" min="0" value="${question.position}"></label></div><div class="form-grid two">${['a','b','c','d'].map(key => `<label>Option ${key.toUpperCase()}<input name="option_${key}" value="${esc(question[`option_${key}`])}" maxlength="300"></label>`).join('')}</div><div class="form-grid two"><label>Correct answer / key<input name="correct_answer" maxlength="300" required value="${esc(question.correct_answer)}"></label><label>Points<input name="points" type="number" min="0" max="10000" value="${question.points}"></label><label>Time limit · seconds<input name="time_limit" type="number" min="5" max="3600" value="${question.time_limit}"></label></div><p class="subtle">Questions already used by a quiz or final assignment cannot be changed.</p><button class="button primary" type="submit">Save changes</button></form>`, host => {
           host.querySelector('#edit-question').onsubmit = async event => {
             event.preventDefault();
             try { await api(`/api/admin/questions/${question.id}`, {method:'PATCH',body:JSON.stringify(Object.fromEntries(new FormData(event.currentTarget)))}); host.innerHTML=''; toast('Question updated'); loadQuestions(); }
@@ -149,31 +256,32 @@
     catch(error){toast(error.message,true);}
   }
   document.getElementById('question-form').onsubmit=async event=>{event.preventDefault();const data=Object.fromEntries(new FormData(event.currentTarget));try{await api('/api/admin/questions',{method:'POST',body:JSON.stringify(data)});event.currentTarget.reset();toast('Question saved');loadQuestions();}catch(error){toast(error.message,true);}};
-  async function loadRounds(){
-      try{
-        const rounds=await api('/api/rounds');
-        document.getElementById('round-control-list').innerHTML=rounds.map(round=>{
-        const teams=Array.isArray(round.teams)?round.teams:null;
-        const groupFlowReady=teams!==null&&typeof round.can_start==='boolean'&&typeof round.can_end==='boolean';
-        const teamRows=teams===null
-          ?'<li class="round-team-empty">Five-team progress unavailable. Restart the app to load the updated round controls.</li>'
-          :teams.length?teams.map(team=>{
-            const teamRoundStatus=team.session_status||(['DISABLED','DISQUALIFIED'].includes(team.team_status)?team.team_status:'WAITING');
-            return `<li><span><strong>${esc(team.team_id)}</strong><small>${esc(team.team_name)}</small></span>${status(teamRoundStatus)}</li>`;
-          }).join(''):'<li class="round-team-empty">Add the five event teams to begin.</li>';
-        const teamTarget=round.required_teams??5;
-        return `<article class="round-control-card"><div class="round-card-heading"><span class="round-number">0${round.number}</span><div><h3>${esc(round.name)}</h3><p>${status(round.status)}${round.started_at?` · Started ${date(round.started_at)}`:''}</p></div></div><div class="round-team-progress"><strong>Teams complete</strong><span>${round.completed_teams??0} / ${teamTarget}</span><ul class="round-team-list">${teamRows}</ul></div><div class="round-actions">${round.status==='LOCKED'?`<button class="button secondary" data-round-action="unlock" data-round-id="${round.id}" ${groupFlowReady&&round.can_start?'':'disabled'}>Unlock</button>`:''}${['READY','PAUSED'].includes(round.status)?`<button class="button primary" data-round-action="start" data-round-id="${round.id}" ${groupFlowReady&&round.can_start?'':'disabled'}>Start round</button>`:''}${round.status==='ACTIVE'?`<button class="button secondary" data-round-action="pause" data-round-id="${round.id}">Pause</button><button class="button primary" data-round-action="end" data-round-id="${round.id}" ${groupFlowReady&&round.can_end?'':'disabled'}>End round</button>`:''}</div></article>`;
-        }).join('');
-        document.querySelectorAll('[data-round-action]').forEach(button=>button.onclick=async()=>{
-          try{
-            if(button.dataset.roundAction==='end'&&!confirm('End this round after all five teams finish?'))return;
-            await api(`/api/rounds/${button.dataset.roundId}/${button.dataset.roundAction}`,{method:'POST',body:'{}'});
-            toast(`Round ${button.dataset.roundAction}d`);loadRounds();loadOverview();
-          }catch(error){toast(error.message,true);}
-        });
-      }catch(error){toast(error.message,true);}
-    }
-  async function loadMonitoring(){try{const rows=await api('/api/admin/monitoring');const filter=document.getElementById('monitor-filter').value;const filtered=rows.filter(row=>filter==='all'||(filter==='active'?row.status==='ACTIVE':filter==='completed'?row.status==='COMPLETED':row.round===Number(filter)));document.getElementById('monitor-table').innerHTML=filtered.length?filtered.map(row=>`<tr><td><b>${esc(row.team_id)}</b><small style="display:block;margin-top:3px;color:#929bae">${esc(row.team_name)}</small></td><td>${row.round?`R${row.round}`:'—'}</td><td>${esc(row.current_qr)}</td><td>${date(row.last_scan)}</td><td><b>${row.score}</b></td><td>${date(row.round_start)}</td><td>${date(row.last_activity)}</td><td>${status(row.status)}</td></tr>`).join(''):'<tr><td colspan="8" class="empty-cell">No teams match this filter.</td></tr>';}catch(error){toast(error.message,true);}}
+  async function loadRounds() {
+    try {
+      const rounds = await api('/api/rounds');
+      const host = document.getElementById('round-control-list');
+      const hasEnded = rounds.some(round => round.status === 'ENDED');
+      const canOpenAll = rounds.length === 3 && rounds.some(round => round.status !== 'ACTIVE');
+      const recovery = hasEnded ? await Promise.all([api('/api/admin/event'),api('/api/admin/profile')]) : null;
+      const canReopenTest = recovery && recovery[0].mode === 'TEST' && !recovery[0].results_locked && recovery[1].role === 'super-admin';
+      const showOpen = canOpenAll && (!hasEnded || canReopenTest);
+      const openingCopy = hasEnded ? 'These are saved round states from an earlier test. A super-admin may reopen them only while no team progress or results exist.' : 'Open all three rounds for the event. Team order stays enforced, and only released batches may enter Round 1.';
+      host.innerHTML = `${showOpen?`<div class="panel form-panel"><p>${openingCopy}</p><button class="button primary" id="start-all-rounds">${hasEnded?'Reopen test rounds':'Open all rounds'}</button></div>`:hasEnded?'<div class="panel form-panel"><p>One or more rounds have ended. Existing progress and results are protected; contact a super-admin to review the event state.</p></div>':''}` + rounds.map(round => `<article class="round-control-card"><span class="round-number">0${round.number}</span><h3>${esc(round.name)}</h3><p>${status(round.status)}${round.started_at?` · Started ${date(round.started_at)}`:''}</p><div class="round-actions">${round.status==='PAUSED'?`<button class="button secondary" data-round-action="resume" data-round-id="${round.id}">Resume</button>`:''}${round.status==='ACTIVE'?`<button class="button secondary" data-round-action="pause" data-round-id="${round.id}">Pause</button><button class="button primary" data-round-action="end" data-round-id="${round.id}">End round</button>`:''}</div></article>`).join('');
+      const open = host.querySelector('#start-all-rounds');
+      if (open) open.onclick = async () => {
+        try { if (hasEnded && !confirm('Reopen all three TEST rounds? This is allowed only before any team progress or results exist.')) return; await api('/api/rounds/start-all', {method:'POST',body:'{}'}); toast('All three rounds are open'); loadRounds(); loadOverview(); }
+        catch (error) { toast(error.message, true); }
+      };
+      host.querySelectorAll('[data-round-action]').forEach(button => button.onclick = async () => {
+        try {
+          if (button.dataset.roundAction === 'end' && !confirm('End this global round? Teams in later batches may still need it. Incomplete teams will remain incomplete.')) return;
+          await api(`/api/rounds/${button.dataset.roundId}/${button.dataset.roundAction}`, {method:'POST',body:'{}'});
+          toast({pause:'Round paused',resume:'Round resumed',end:'Round ended'}[button.dataset.roundAction]); loadRounds(); loadOverview();
+        } catch (error) { toast(error.message, true); }
+      });
+    } catch (error) { toast(error.message, true); }
+  }
+  async function loadMonitoring(){try{const rows=await api('/api/admin/monitoring');const filter=document.getElementById('monitor-filter').value;const filtered=rows.filter(row=>filter==='all'||(filter==='active'?row.status==='ACTIVE':filter==='completed'?row.status==='COMPLETED':row.round===Number(filter)));document.getElementById('monitor-table').innerHTML=filtered.length?filtered.map(row=>`<tr><td><b>${esc(row.team_id)}</b><small style="display:block;margin-top:3px;color:#929bae">${esc(row.team_name)} · Batch ${esc(row.batch_number||'—')} ${esc(row.batch_status)}</small></td><td>${row.round?`R${row.round}`:'—'}</td><td>${esc(row.current_qr)}</td><td>${date(row.last_scan)}</td><td><b>${row.score}</b></td><td>${date(row.round_start)}</td><td>${date(row.last_activity)}</td><td>${status(row.status)}</td></tr>`).join(''):'<tr><td colspan="8" class="empty-cell">No teams match this filter.</td></tr>';}catch(error){toast(error.message,true);}}
   document.getElementById('monitor-filter').onchange=loadMonitoring;
   async function loadScores(){try{const rows=await api('/api/admin/scores');document.getElementById('scores-table').innerHTML=rows.length?rows.map(row=>`<tr><td>${esc(row.team_id)}</td><td>${esc(row.team_name)}</td><td>Round ${row.round}</td><td><b>${row.points}</b></td><td>${date(row.updated_at)}</td></tr>`).join(''):'<tr><td colspan="5" class="empty-cell">No scores have been recorded.</td></tr>';loadTeams();}catch(error){toast(error.message,true);}}
   async function loadLeaderboard(){try{const rows=await api('/api/leaderboard');drawLeaderboard(rows,'leaderboard-table');document.getElementById('podium').innerHTML=rows.slice(0,3).map((row,index)=>`<div class="podium-card"><span class="podium-rank">${['1st place','2nd place','3rd place'][index]}</span><strong>${esc(row.team_name)}</strong><small>${esc(row.team_id)} · ${row.score} points · ${clock(row.time)}</small></div>`).join('');}catch(error){toast(error.message,true);}}
@@ -185,6 +293,6 @@
   updateClock();setInterval(updateClock,1000);
   window.addEventListener('hashchange',()=>showView(location.hash.slice(1)));
   showView(views.includes(location.hash.slice(1))?location.hash.slice(1):'overview');
-  if(window.io){const socket=io();socket.on('connect',()=>{const state=document.getElementById('connection-status');state.classList.remove('reconnecting');state.querySelector('span').textContent='Live updates connected';socket.emit('join_admin');loadOverview();});socket.on('disconnect',()=>{const state=document.getElementById('connection-status');state.classList.add('reconnecting');state.querySelector('span').textContent='Reconnecting · polling active';});socket.on('activity',item=>{toast(item.message);if(document.getElementById('view-leaderboard').classList.contains('active'))loadLeaderboard();if(document.getElementById('view-scores').classList.contains('active'))loadScores();if(document.getElementById('view-operations').classList.contains('active'))window.refreshDesktopMonitor?.();if(document.getElementById('view-activity').classList.contains('active'))loadActivity();if(document.getElementById('view-overview').classList.contains('active'))loadOverview();if(document.getElementById('view-monitoring').classList.contains('active'))loadMonitoring();});socket.on('leaderboard',()=>{if(document.getElementById('view-leaderboard').classList.contains('active'))loadLeaderboard();if(document.getElementById('view-overview').classList.contains('active'))loadOverview();});socket.on('leaderboard_update',()=>{if(document.getElementById('view-leaderboard').classList.contains('active'))loadLeaderboard();if(document.getElementById('view-overview').classList.contains('active'))loadOverview();});}
-  setInterval(()=>{if(document.getElementById('view-monitoring').classList.contains('active'))loadMonitoring();if(document.getElementById('view-overview').classList.contains('active'))loadOverview();if(document.getElementById('view-rounds').classList.contains('active'))loadRounds();},15000);
+  if(window.io){const socket=io();socket.on('connect',()=>{const state=document.getElementById('connection-status');state.classList.remove('reconnecting');state.querySelector('span').textContent='Live updates connected';socket.emit('join_admin');loadOverview();});socket.on('disconnect',()=>{const state=document.getElementById('connection-status');state.classList.add('reconnecting');state.querySelector('span').textContent='Reconnecting · polling active';});socket.on('activity',item=>{toast(item.message);if(document.getElementById('view-batches').classList.contains('active'))loadBatches();if(document.getElementById('view-leaderboard').classList.contains('active'))loadLeaderboard();if(document.getElementById('view-scores').classList.contains('active'))loadScores();if(document.getElementById('view-operations').classList.contains('active'))window.refreshDesktopMonitor?.();if(document.getElementById('view-activity').classList.contains('active'))loadActivity();if(document.getElementById('view-overview').classList.contains('active'))loadOverview();if(document.getElementById('view-monitoring').classList.contains('active'))loadMonitoring();});socket.on('leaderboard',()=>{if(document.getElementById('view-leaderboard').classList.contains('active'))loadLeaderboard();if(document.getElementById('view-overview').classList.contains('active'))loadOverview();});socket.on('leaderboard_update',()=>{if(document.getElementById('view-leaderboard').classList.contains('active'))loadLeaderboard();if(document.getElementById('view-overview').classList.contains('active'))loadOverview();});}
+  setInterval(()=>{if(document.getElementById('view-monitoring').classList.contains('active'))loadMonitoring();if(document.getElementById('view-batches').classList.contains('active'))loadBatches();if(document.getElementById('view-overview').classList.contains('active'))loadOverview();},15000);
 })();

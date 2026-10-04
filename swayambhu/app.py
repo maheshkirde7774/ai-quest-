@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).with_name(".env"))
 
 import click
-from flask import Flask, jsonify
+from flask import Flask, jsonify, send_from_directory
 from flask_login import current_user
 from flask_socketio import join_room
 
@@ -21,9 +21,10 @@ def create_app(test_config=None):
     app.config.from_object(Config)
     if test_config:
         app.config.update(test_config)
-    if app.config.get("TESTING") and "ROUND_GROUP_SIZE" not in (test_config or {}):
-        app.config["ROUND_GROUP_SIZE"] = 0
     Config.validate_runtime()
+    if app.config["APP_ENV"] == "production":
+        from urllib.parse import urlsplit
+        app.config["TRUSTED_HOSTS"] = [urlsplit(app.config["PUBLIC_BASE_URL"]).hostname]
     if app.config["SQLALCHEMY_DATABASE_URI"].startswith("sqlite:"):
         options = dict(app.config.get("SQLALCHEMY_ENGINE_OPTIONS", {}))
         options.setdefault("connect_args", {}).setdefault("timeout", 30)
@@ -70,19 +71,30 @@ def create_app(test_config=None):
         if current_user.is_authenticated and getattr(current_user, "role", "") in (
             "admin", "super-admin"
         ):
-            join_room("admins")
-            join_room(f"admin:{current_user.id}")
+            try:
+                join_room("admins")
+                join_room(f"admin:{current_user.id}")
+            except KeyError:
+                # A concurrent disconnect can remove the Socket.IO session between room joins.
+                return
 
     @socketio.on("join_participant")
     def join_participant_room():
         if current_user.is_authenticated and getattr(current_user, "role", "") in (
             "team", "admin", "super-admin"
         ):
-            join_room("participants")
+            try:
+                join_room("participants")
+            except KeyError:
+                return
 
     from routes import register_routes
 
     register_routes(app)
+
+    @app.get("/favicon.ico")
+    def favicon():
+        return send_from_directory(app.static_folder, "favicon.ico", mimetype="image/vnd.microsoft.icon")
 
     @app.get("/health/db")
     def database_health():
@@ -158,17 +170,19 @@ def install_request_guards(app):
         if request.method in ("POST", "PUT", "PATCH", "DELETE"):
             # PostgreSQL row write lock is held through the request transaction.
             # SQLite uses its writer lock, making functional race tests meaningful.
-            if request.is_json:
+            if request.is_json and request.get_data(cache=True).strip():
                 payload = request.get_json()
                 if not isinstance(payload, dict):
                     raise EventError("Expected a JSON object.", 400)
                 for key, value in payload.items():
-                    if key.endswith("_id") and value not in (None, ""):
+                    if key.endswith("_id") and key != "qr_id" and value not in (None, ""):
                         try:
                             if int(value) < 1:
                                 raise ValueError
                         except (ValueError, TypeError):
                             raise EventError("Record IDs must be positive whole numbers.", 400)
+            elif request.is_json and request.method != "DELETE":
+                raise EventError("Expected a JSON object.", 400)
             db.session.execute(update(Event).where(Event.id == 1).values(version=Event.version + 1))
 
     @app.after_request

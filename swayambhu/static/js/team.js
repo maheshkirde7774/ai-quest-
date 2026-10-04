@@ -14,15 +14,17 @@
       summary=await api('/api/team/dashboard');
       $('team-name').textContent=summary.team.team_name;
       $('team-id').textContent=summary.team.team_id;
+      $('team-batch').textContent=summary.team.batch_number?`Batch ${summary.team.batch_number} · ${summary.team.batch_status.replaceAll('_',' ').toLowerCase()}`:'Batch assignment pending';
       $('team-status').textContent=summary.team.state.replaceAll('_',' ').toLowerCase().replace(/\b\w/g,c=>c.toUpperCase());
       $('team-status').dataset.state=summary.team.state;
       $('action-round').textContent=String(summary.round_number||3).padStart(2,'0');
-      $('event-status').textContent=summary.team.state==='COMPLETED'?'Quest completed':summary.round_status==='ACTIVE'?'Round open':summary.round_status==='PAUSED'?'Round paused':'Waiting for coordinator';
+      $('event-status').textContent=summary.team.state==='COMPLETED'?'Quest completed':summary.round_number===1&&!summary.session_active&&summary.team.batch_status==='PAUSED'?'Batch paused':summary.round_number===1&&!summary.session_active&&!['RELEASED','IN_PROGRESS'].includes(summary.team.batch_status)?'Waiting for batch':summary.round_status==='ACTIVE'?'Round open':summary.round_status==='PAUSED'?'Round paused':'Waiting for coordinator';
       $('team-score').textContent=summary.score ?? 'Pending';
       $('team-round').textContent=summary.current_round;
       $('team-round-status').textContent=summary.round_status;
       const active=summary.round_status==='ACTIVE';
-      $('start-round').hidden=!(active&&summary.round_number===1&&!summary.session_active);
+      const batchReady=['RELEASED','IN_PROGRESS'].includes(summary.team.batch_status);
+      $('start-round').hidden=!(active&&batchReady&&summary.round_number===1&&!summary.session_active);
       const canScan=active && ['ROUND_1_ACTIVE','ROUND_1_COMPLETED','ROUND_2_COMPLETED'].includes(summary.team.state);
       $('scan-open').hidden=!canScan;
       $('scan-fallback').hidden=!canScan;
@@ -33,7 +35,7 @@
       const instructions={REGISTERED:['Ready for your first clue?','Start Round 1, then scan the QR matching the number on your envelope.'],ROUND_1_ACTIVE:['Find your assigned QR.','Scan the QR matching the number on your envelope to reveal your clue.'],ROUND_1_COMPLETED:['Follow the clue.','Solve the clue and scan the destination QR to open your ten-question quiz.'],ROUND_2_ACTIVE:['Your quiz is ready.','Open the quiz to continue. Answers save as you select them. Results are announced later.'],ROUND_2_COMPLETED:['Head to the desktop station.','Follow the coordinator’s instructions and scan your desktop QR.'],PASSWORD_CHALLENGE:['Solve the password clue.','Continue on your assigned desktop. Your attempt count is saved.'],FINAL_CHALLENGE:['Finish the final challenge.','Continue on your assigned desktop. Your questions and answers are saved.'],COMPLETED:['Quest complete.','Your submissions have been recorded. Results will be announced after judging.'],DISQUALIFIED:['Contact your coordinator.','Your team is unable to continue. Please speak to an event coordinator.']};
       const [heading,copy]=instructions[summary.team.state]||[summary.current_round,'Follow the coordinator’s instructions.'];
       $('action-heading').textContent=heading;
-      $('action-copy').textContent=summary.round_status==='PAUSED'?'This round is paused. Your progress is saved. Wait for the coordinator to resume it.':copy;
+      $('action-copy').textContent=summary.round_number===1&&!summary.session_active&&summary.team.batch_status==='PAUSED'?'Your batch is paused. Please wait for the coordinator to resume it.':summary.round_number===1&&!summary.session_active&&!batchReady?'Your batch is waiting for release. Please wait for the coordinator.':summary.round_status==='PAUSED'?'This round is paused. Your progress is saved. Wait for the coordinator to resume it.':copy;
       if(summary.clue && summary.team.state==='ROUND_1_COMPLETED'){$('scan-result').hidden=false;$('scan-result').textContent=summary.clue;}
       if(summary.destination && summary.team.state==='ROUND_2_COMPLETED'){$('scan-result').hidden=false;$('scan-result').textContent=summary.destination;}
       $('team-round-track').innerHTML=(await api('/api/team/rounds')).map(r=>`<div class="team-round-step ${summary.team.state==='COMPLETED'||r.number<summary.round_number?'done':r.number===summary.round_number?'active':''}"><strong>${r.number} · ${esc(r.name)}</strong><small>${summary.team.state==='COMPLETED'||r.number<summary.round_number?'Completed':`${r.number===summary.round_number?'Your current round':'Up next'} · ${esc(r.status.toLowerCase())}`}</small></div>`).join('');

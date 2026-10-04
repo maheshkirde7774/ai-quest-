@@ -83,19 +83,25 @@ def logout():
 
 
 def allow_login(kind, identity):
-    """Shared database throttle works across workers; no process-local counters."""
+    """Limit account guesses and total attempts from one source across workers."""
     import hashlib
     import time
     window = int(time.time()) // 60
-    key = hashlib.sha256(f"{kind}:{request.remote_addr}:{identity[:120]}".encode()).hexdigest()
-    bucket = db.session.get(RateBucket, key)
-    if not bucket:
-        bucket = RateBucket(key=key, window=window, count=0)
-        db.session.add(bucket)
-    if bucket.window != window:
-        bucket.window, bucket.count = window, 0
-    bucket.count += 1
-    if bucket.count > 10:
+    source = request.remote_addr or "unknown"
+    limits = ((f"{kind}:{source}:{identity[:120]}", 10),
+              (f"{kind}:{source}", 30))
+    exceeded = False
+    for name, limit in limits:
+        key = hashlib.sha256(name.encode()).hexdigest()
+        bucket = db.session.get(RateBucket, key)
+        if not bucket:
+            bucket = RateBucket(key=key, window=window, count=0)
+            db.session.add(bucket)
+        if bucket.window != window:
+            bucket.window, bucket.count = window, 0
+        bucket.count += 1
+        exceeded |= bucket.count > limit
+    if exceeded:
         db.session.commit()
         return False
     return True

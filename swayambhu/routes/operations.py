@@ -5,7 +5,7 @@ from zipfile import ZipFile
 from flask import Blueprint, current_app, jsonify, request, Response, send_file, render_template
 from flask_login import current_user
 from extensions import db
-from models import (ActivityLog, Admin, Answer, Desktop, DesktopSession, FinalAnswer,
+from models import (ActivityLog, Admin, Answer, Batch, Desktop, DesktopSession, FinalAnswer,
                     FinalAssignment, FinalResult, PasswordAttempt, QRChallenge, QRScanEvent,
                     Question, Quiz, QuizAttempt, QuizQuestion, Round, RoundSession, ScanLog,
                     Score, Team, TeamMember, utcnow)
@@ -300,7 +300,7 @@ def print_qrs():
 
 def export_rows(kind):
     if kind=="teams":
-        return [dict(team_id=t.team_id,name=t.team_name,members="; ".join(m.name for m in t.members),status=t.status,state=t.state) for t in Team.query.order_by(Team.id)]
+        return [dict(team_id=t.team_id,name=t.team_name,batch=t.batch.number if t.batch else "",batch_status=t.batch.status if t.batch else "UNASSIGNED",members="; ".join(m.name for m in t.members),status=t.status,state=t.state) for t in Team.query.order_by(Team.id)]
     if kind=="scans":
         return [dict(team=r.team.team_id if r.team else "",qr=r.qr.qr_id if r.qr else "",round_id=r.round_id,timestamp=iso_utc(r.timestamp),status=r.status,ip=r.ip_address,user_agent=r.user_agent) for r in QRScanEvent.query.order_by(QRScanEvent.id)]
     if kind=="quiz-responses":
@@ -311,7 +311,9 @@ def export_rows(kind):
         return [dict(team=db.session.get(Team,db.session.get(FinalAssignment,a.assignment_id).team_id).team_id,question=a.question_id,answer=a.answer,timestamp=iso_utc(a.timestamp),points=a.points) for a in FinalAnswer.query.order_by(FinalAnswer.id)]
     if kind in ("scores","leaderboard"):
         from utils.scoring import leaderboard_rows
-        return leaderboard_rows()
+        teams = {team.team_id: team for team in Team.query}
+        return [{**row, "batch": teams[row["team_id"]].batch.number if teams[row["team_id"]].batch else ""}
+                for row in leaderboard_rows()]
     if kind=="logs":
         return [dict(id=r.id,admin_id=r.admin_id,team_id=r.team_id,action=r.action,target=r.target,timestamp=iso_utc(r.timestamp),metadata=r.metadata_json,request_id=r.request_id) for r in ActivityLog.query.order_by(ActivityLog.id)]
     raise EventError("Unknown export.",404)
@@ -356,7 +358,7 @@ def reset_test():
     if event.active or event.results_locked or data().get("confirmation")!="RESET TEST PROGRESS":
         raise EventError("Stop the TEST event, unlock results, and type RESET TEST PROGRESS.")
     for model in (PasswordAttempt,FinalAnswer,FinalAssignment,DesktopSession,QuizAttempt,Answer,ScanLog,
-                  QRScanEvent,FinalResult,Score,RoundSession,ActivityLog,TeamMember,Team):
+                  QRScanEvent,FinalResult,Score,RoundSession,ActivityLog,TeamMember,Team,Batch):
         model.query.delete(synchronize_session=False)
     for row in Round.query:
         row.status = "READY" if row.number==1 else "LOCKED"

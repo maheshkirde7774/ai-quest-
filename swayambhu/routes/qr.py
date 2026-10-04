@@ -6,8 +6,8 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from extensions import db
-from models import Answer, Question, QRChallenge, Round, RoundSession, ScanLog, Score, Team, utcnow
-from routes.common import admin_required, audit, emit_activity, emit_leaderboard, iso_utc, team_required
+from models import Answer, Desktop, Question, QRChallenge, QRScanEvent, Round, RoundSession, ScanLog, Score, Team, utcnow
+from routes.common import admin_required, audit, emit_activity, emit_leaderboard, iso_utc, super_admin_required, team_required
 from utils.qr_generator import render_qr, scan_url
 from utils.security import new_qr_token
 
@@ -28,6 +28,7 @@ def _qr_payload(challenge):
         "created_at": iso_utc(challenge.created_at),
         "updated_at": iso_utc(challenge.updated_at),
         "activated_at": iso_utc(challenge.activated_at),
+        "deactivated_at": iso_utc(challenge.deactivated_at),
         "expires_at": iso_utc(challenge.expires_at),
         "scans": len(challenge.scans),
     }
@@ -113,6 +114,33 @@ def qr_image(qr_pk):
         return jsonify(error="QR not found."), 404
     payload = scan_url(challenge.secure_token)
     return send_file(render_qr(payload), mimetype="image/png", download_name=f"{challenge.qr_id}.png")
+
+
+@qr_bp.delete("/api/qrs/<int:qr_pk>")
+@super_admin_required
+def permanently_delete_qr(qr_pk):
+    challenge = db.session.get(QRChallenge, qr_pk)
+    if not challenge:
+        return jsonify(error="QR not found."), 404
+    from services.event import event_config
+    if event_config().results_locked:
+        return jsonify(error="Results are locked."), 409
+    scan_events = QRScanEvent.query.filter_by(qr_id=challenge.id).all()
+    if (ScanLog.query.filter_by(qr_id=challenge.id).first()
+            or any(row.status == "VALID" for row in scan_events)
+            or Team.query.filter_by(assigned_qr_id=challenge.id).first()
+            or Desktop.query.filter_by(qr_id=challenge.id).first()):
+        return jsonify(error="This QR has scan, team, or desktop history. Archive it to preserve its records."), 409
+    label = challenge.qr_id
+    audit("QR_PERMANENTLY_DELETED", label)
+    # Keep failed or unauthenticated scan attempts while removing their FK to this QR.
+    for scan_event in scan_events:
+        scan_event.qr_id = None
+    db.session.flush()
+    db.session.delete(challenge)
+    db.session.commit()
+    emit_activity(f"{label} permanently deleted", "qr")
+    return jsonify(ok=True, deleted=True)
 
 
 @qr_bp.post("/api/qrs/<int:qr_pk>/<action>")
@@ -324,7 +352,9 @@ def monitoring():
         ]
         last_activity = max(activity_times, default=None)
         result.append({
-            **{"team_id": team.team_id, "team_name": team.team_name, "status": team.status},
+            **{"team_id": team.team_id, "team_name": team.team_name, "status": team.status,
+               "batch_number": team.batch.number if team.batch else None,
+               "batch_status": team.batch.status if team.batch else "UNASSIGNED"},
             "round": session.round.number if session else (latest.challenge.round.number if latest else 0),
             "current_qr": latest.challenge.qr_id if latest else "-",
             "last_scan": iso_utc(latest.scan_time) if latest else None,
@@ -343,18 +373,90 @@ def edit_qr(qr_pk):
     data = request.get_json(silent=True) or {}
     if challenge.scans:
         return jsonify(error="Archive and replace a QR already used by teams."), 409
+    from services.event import event_config
+    if event_config().results_locked:
+        return jsonify(error="Results are locked."), 409
+    event_round = challenge.round
+    if "round_id" in data:
+        event_round = db.session.get(Round, data["round_id"])
+        if not event_round:
+            return jsonify(error="Select a valid round."), 400
+    from models import Desktop
+    linked = (Team.query.filter_by(assigned_qr_id=challenge.id).first()
+              or Desktop.query.filter_by(qr_id=challenge.id).first())
+    def changed_id(key, current):
+        if key not in data:
+            return False
+        raw = data[key]
+        value = None if raw in (None, "") else int(raw)
+        return value != current
+
+    identity_changed = (
+        ("qr_id" in data and str(data["qr_id"]).strip() != challenge.qr_id)
+        or changed_id("round_id", challenge.round_id)
+        or changed_id("question_id", challenge.question_id)
+        or changed_id("quiz_id", challenge.quiz_id)
+    )
+    if linked and identity_changed:
+        return jsonify(error="Round, QR number, question, and quiz cannot change while assigned to a team or desktop."), 409
+    if "qr_id" in data:
+        label = str(data["qr_id"]).strip()
+        if not label or len(label) > 30 or not all(c.isalnum() or c == "-" for c in label):
+            return jsonify(error="QR number must use letters, numbers or hyphens (30 characters maximum)."), 400
+        existing = QRChallenge.query.filter(QRChallenge.qr_id == label, QRChallenge.id != challenge.id).first()
+        if existing:
+            return jsonify(error="QR number already exists."), 409
+        challenge.qr_id = label
+    question = None
+    if "question_id" in data and data["question_id"] not in (None, ""):
+        question = db.session.get(Question, data["question_id"])
+        if not question or question.round_id != event_round.id:
+            return jsonify(error="Select a clue or question from the chosen round."), 400
+    if "question_id" in data:
+        challenge.question_id = question.id if question else None
+    if "round_id" in data:
+        challenge.round = event_round
+    if event_round.number == 2:
+        quiz_id = data.get("quiz_id", challenge.quiz_id)
+        quiz = db.session.get(Quiz, quiz_id) if quiz_id not in (None, "") else None
+        if not quiz:
+            return jsonify(error="Select a configured quiz for a Round 2 QR."), 400
+        challenge.quiz_id = quiz.id
+    elif "round_id" in data or "quiz_id" in data:
+        if data.get("quiz_id") not in (None, ""):
+            return jsonify(error="Only Round 2 QRs can be linked to a quiz."), 400
+        challenge.quiz_id = None
     for key, limit in (("title", 120), ("room", 120), ("clue", 2000)):
         if key in data:
             value = str(data[key]).strip()
             if len(value) > limit:
                 return jsonify(error=f"{key} is too long."), 400
             setattr(challenge, key, value)
-    if "quiz_id" in data:
-        quiz = db.session.get(Quiz, data["quiz_id"])
-        if challenge.round.number != 2 or not quiz:
-            return jsonify(error="Select a valid Round 2 quiz."), 400
-        challenge.quiz_id = quiz.id
-    audit("QR_UPDATED", challenge.qr_id)
+    if "expires_at" in data:
+        value = data["expires_at"]
+        if value in (None, ""):
+            challenge.expires_at = None
+        else:
+            try:
+                expires_at = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+                if expires_at.tzinfo is None:
+                    expires_at = expires_at.replace(tzinfo=timezone.utc)
+                challenge.expires_at = expires_at.astimezone(timezone.utc)
+            except ValueError:
+                return jsonify(error="Expiration must be a valid date and time."), 400
+    if "status" in data:
+        new_status = str(data["status"]).upper()
+        if new_status not in ("ACTIVE", "INACTIVE", "ARCHIVED"):
+            return jsonify(error="Status must be ACTIVE, INACTIVE, or ARCHIVED."), 400
+        if new_status == "ACTIVE" and event_round.status not in ("READY", "ACTIVE"):
+            return jsonify(error="The selected round is not open for QR activation."), 409
+        if challenge.status == "ACTIVE" and new_status != "ACTIVE":
+            challenge.deactivated_at = utcnow()
+        elif new_status == "ACTIVE" and challenge.status != "ACTIVE":
+            challenge.activated_at = utcnow()
+            challenge.deactivated_at = None
+        challenge.status = new_status
+    audit("QR_UPDATED", challenge.qr_id, {"fields": sorted(data.keys())})
     db.session.commit()
     return jsonify(qr=_qr_payload(challenge))
 

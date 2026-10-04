@@ -29,6 +29,10 @@ class Admin(UserMixin, db.Model):
 
 
 class Team(UserMixin, db.Model):
+    __table_args__ = (
+        db.UniqueConstraint("batch_id", "batch_position", name="uq_team_batch_position"),
+        db.Index("ix_team_batch_status", "batch_id", "status"),
+    )
     id = db.Column(db.Integer, primary_key=True)
     team_id = db.Column(db.String(20), unique=True, nullable=False, index=True)
     team_name = db.Column(db.String(120), nullable=False)
@@ -44,6 +48,9 @@ class Team(UserMixin, db.Model):
     assigned_qr_id = db.Column(db.Integer, db.ForeignKey("qr_challenge.id"))
     bonus = db.Column(db.Integer, nullable=False, default=0)
     penalty = db.Column(db.Integer, nullable=False, default=0)
+    batch_id = db.Column(db.Integer, db.ForeignKey("batch.id"), index=True)
+    batch_position = db.Column(db.Integer)
+    batch = db.relationship("Batch", back_populates="teams")
 
     scans = db.relationship("QRScan", back_populates="team", cascade="all, delete-orphan")
     answers = db.relationship("Answer", back_populates="team", cascade="all, delete-orphan")
@@ -246,6 +253,19 @@ class Event(db.Model):
     round_1_points = db.Column(db.Integer, nullable=False, default=0)
     round_3_destination = db.Column(db.String(300), nullable=False, default="Contact the coordinator for your desktop station.")
     version = db.Column(db.Integer, nullable=False, default=0)
+    batch_size = db.Column(db.Integer, nullable=False, default=5)
+
+
+class Batch(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    number = db.Column(db.Integer, nullable=False, unique=True)
+    capacity = db.Column(db.Integer, nullable=False, default=5)
+    status = db.Column(db.String(20), nullable=False, default="WAITING", index=True)
+    released_at = db.Column(db.DateTime(timezone=True))
+    triggered_at = db.Column(db.DateTime(timezone=True))
+    completed_at = db.Column(db.DateTime(timezone=True))
+    teams = db.relationship("Team", back_populates="batch", order_by="Team.batch_position")
+    __table_args__ = (db.CheckConstraint("capacity > 0", name="ck_batch_capacity"),)
 
 
 class QRScanEvent(db.Model):

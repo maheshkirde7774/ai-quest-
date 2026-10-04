@@ -3,7 +3,8 @@ from datetime import timedelta
 
 from app import create_app
 from extensions import db
-from models import Event, Answer, Admin, FinalResult, QRChallenge, Round, RoundSession, Score, Team, TeamMember, utcnow
+from models import (Event, Answer, Admin, FinalResult, QRChallenge, QRScanEvent,
+                    Round, RoundSession, Score, Team, TeamMember, utcnow)
 from utils.scoring import leaderboard_rows
 
 
@@ -11,6 +12,8 @@ class EventAppTests(unittest.TestCase):
     def setUp(self):
         self.app = create_app({
             "TESTING": True,
+            "APP_ENV": "development",
+            "EVENT_MODE": "TEST",
             "AUTO_INIT_DB": False,
             "WTF_CSRF_ENABLED": False,
             "SQLALCHEMY_DATABASE_URI": "sqlite:///:memory:",
@@ -150,12 +153,65 @@ class EventAppTests(unittest.TestCase):
         })
         self.assertEqual(team_client.post("/api/team/rounds/2/start", json={}).status_code, 409)
 
-    def test_ending_round_unlocks_the_next_round(self):
+    def test_rounds_open_together_and_do_not_unlock_in_sequence(self):
         self.login_admin()
-        self.assertEqual(self.client.post("/api/rounds/1/start", json={}).status_code, 200)
+        opened = self.client.post("/api/rounds/start-all", json={})
+        self.assertEqual(opened.status_code, 200)
+        self.assertEqual([row["status"] for row in opened.get_json()["rounds"]], ["ACTIVE"] * 3)
+        self.assertEqual(self.client.post("/api/rounds/start-all", json={}).status_code, 200)
         self.assertEqual(self.client.post("/api/rounds/1/end", json={}).status_code, 200)
         with self.app.app_context():
-            self.assertEqual(Round.query.filter_by(number=2).one().status, "READY")
+            self.assertEqual(Round.query.filter_by(number=2).one().status, "ACTIVE")
+            Round.query.filter_by(number=2).one().status = "ENDED"
+            Round.query.filter_by(number=3).one().status = "READY"
+            db.session.add(QRScanEvent(status="UNAUTHORIZED"))
+            db.session.commit()
+        reopened = self.client.post("/api/rounds/start-all", json={})
+        self.assertEqual(reopened.status_code, 200)
+        self.assertEqual([row["status"] for row in reopened.get_json()["rounds"]], ["ACTIVE"] * 3)
+        with self.app.app_context():
+            self.assertIsNone(Round.query.filter_by(number=1).one().ended_at)
+
+    def test_ended_rounds_with_progress_cannot_be_reopened(self):
+        self.login_admin()
+        with self.app.app_context():
+            db.session.get(Round, 1).status = "ENDED"
+            team = Team(team_id="AIQ-100", team_name="Recorded Team")
+            team.set_pin("123456")
+            db.session.add(team)
+            db.session.flush()
+            db.session.add(Score(team_id=team.id, round_id=1, points=10))
+            db.session.commit()
+        response = self.client.post("/api/rounds/start-all", json={})
+        self.assertEqual(response.status_code, 409)
+        with self.app.app_context():
+            self.assertEqual(db.session.get(Round, 1).status, "ENDED")
+
+    def test_ended_rounds_cannot_reopen_in_production_mode(self):
+        self.login_admin()
+        with self.app.app_context():
+            db.session.get(Round, 1).status = "ENDED"
+            db.session.get(Event, 1).mode = "PRODUCTION"
+            db.session.commit()
+        self.assertEqual(self.client.post("/api/rounds/start-all", json={}).status_code, 409)
+
+    def test_only_super_admin_can_reopen_test_rounds(self):
+        with self.app.app_context():
+            db.session.get(Round, 1).status = "ENDED"
+            assistant = Admin(username="assistant", role="admin")
+            assistant.set_password("a-secure-test-password")
+            db.session.add(assistant)
+            db.session.commit()
+        self.client.post("/admin/login", data={
+            "username": "assistant", "password": "a-secure-test-password"
+        })
+        self.assertEqual(self.client.post("/api/rounds/start-all", json={}).status_code, 403)
+
+    def test_legacy_round_start_opens_every_round(self):
+        self.login_admin()
+        self.assertEqual(self.client.post("/api/rounds/1/start", json={}).status_code, 200)
+        self.assertEqual([row["status"] for row in self.client.get("/api/rounds").get_json()], ["ACTIVE"] * 3)
+        self.assertEqual(self.client.post("/api/rounds/2/unlock", json={}).status_code, 409)
 
 
 if __name__ == "__main__":
