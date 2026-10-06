@@ -66,8 +66,15 @@ def create_qr():
             return jsonify(error="The clue must belong to the selected round."), 400
     from models import Quiz
     quiz_id = data.get("quiz_id")
-    if event_round.number == 2 and (not quiz_id or not db.session.get(Quiz, quiz_id)):
+    quiz = db.session.get(Quiz, quiz_id) if quiz_id else None
+    if event_round.number == 2 and (not quiz or not quiz.active or len(quiz.questions) != 10):
         return jsonify(error="Select a configured quiz for a Round 2 QR."), 400
+    try:
+        count = int(data.get("count", 1))
+    except (TypeError, ValueError):
+        return jsonify(error="Number of QR codes must be a whole number."), 400
+    if count < 1 or count > 100 or (event_round.number != 1 and count != 1):
+        return jsonify(error="Generate 1 to 100 QR codes for Round 1, or one for another round."), 400
     expires_at = None
     if data.get("expires_at"):
         try:
@@ -84,26 +91,30 @@ def create_qr():
         if challenge.qr_id.startswith(prefix) and challenge.qr_id.rsplit("-", 1)[1].isdigit()
     ]
     number = max(numbers, default=0) + 1
-    label = str(data.get("qr_number", f"QR-R{event_round.number}-{number:03d}")).strip()
-    if not label or len(label) > 30 or not all(c.isalnum() or c == "-" for c in label):
+    custom_label = str(data.get("qr_number") or "").strip()
+    if custom_label and count != 1:
+        return jsonify(error="A custom QR number can only be used for one QR."), 400
+    if custom_label and (len(custom_label) > 30 or not all(c.isalnum() or c == "-" for c in custom_label)):
         return jsonify(error="QR number must use letters, numbers or hyphens (30 characters maximum)."), 400
-    if QRChallenge.query.filter_by(qr_id=label).first():
+    if custom_label and QRChallenge.query.filter_by(qr_id=custom_label).first():
         return jsonify(error="QR number already exists."), 409
-    challenge = QRChallenge(
-        qr_id=label,
-        secure_token=new_qr_token(),
-        round_id=event_round.id,
-        question_id=question.id if question else None,
-        room=room,
-        quiz_id=quiz_id if event_round.number == 2 else None,
-        title=str(data.get("title", ""))[:120],
-        clue=str(data.get("clue", ""))[:2000],
-        expires_at=expires_at,
-    )
-    db.session.add(challenge)
-    audit("QR generated", challenge.qr_id, {"round": event_round.number})
+    title = str(data.get("title", "")).strip()
+    clue = str(data.get("clue", "")).strip()
+    if len(title) > 120 or len(clue) > 2000:
+        return jsonify(error="Title or clue is too long."), 400
+    challenges = []
+    for offset in range(count):
+        label = custom_label or f"{prefix}{number + offset:03d}"
+        challenge = QRChallenge(qr_id=label, secure_token=new_qr_token(), round_id=event_round.id,
+                                question_id=question.id if question else None, room=room,
+                                quiz_id=quiz.id if event_round.number == 2 else None,
+                                title=title, clue=clue, expires_at=expires_at)
+        db.session.add(challenge)
+        challenges.append(challenge)
+    db.session.flush()
+    audit("QR generated", challenges[0].qr_id, {"round": event_round.number, "count": count})
     db.session.commit()
-    return jsonify(qr=_qr_payload(challenge)), 201
+    return jsonify(qr=_qr_payload(challenges[0]), qrs=[_qr_payload(q) for q in challenges]), 201
 
 
 @qr_bp.get("/api/qrs/<int:qr_pk>/image")
@@ -269,7 +280,7 @@ def edit_question(question_id):
     question = db.session.get(Question, question_id)
     if not question:
         return jsonify(error="Question not found."), 404
-    from models import QuizQuestion, FinalAssignment
+    from models import QuizQuestion, QuizAttempt, FinalAssignment
     assigned = QuizQuestion.query.filter_by(question_id=question.id).first() or (question.round.number == 3 and FinalAssignment.query.first())
     if request.method == "DELETE":
         if assigned or question.answers or QRChallenge.query.filter_by(question_id=question.id).first():
@@ -283,8 +294,9 @@ def edit_question(question_id):
         "prompt", "option_a", "option_b", "option_c", "option_d",
         "correct_answer", "points", "time_limit", "kind", "position",
     }
+    quiz_attempt = db.session.query(QuizAttempt.id).join(QuizQuestion, QuizQuestion.quiz_id == QuizAttempt.quiz_id).filter(QuizQuestion.question_id == question.id).first()
     if editable.intersection(data) and (
-        assigned or Answer.query.filter_by(question_id=question.id).first()
+        quiz_attempt or (question.round.number == 3 and assigned) or Answer.query.filter_by(question_id=question.id).first()
         or QRChallenge.query.filter_by(question_id=question.id).join(ScanLog).first()
     ):
         return jsonify(error="A question with recorded attempts cannot be edited."), 409

@@ -103,13 +103,25 @@ def quizzes():
                      "question_ids": [link.question_id for link in q.questions]} for q in Quiz.query.order_by(Quiz.id)])
 
 
-@operations_bp.patch("/api/admin/quizzes/<int:quiz_id>")
+@operations_bp.route("/api/admin/quizzes/<int:quiz_id>", methods=["PATCH", "DELETE"])
 @admin_required
 def edit_quiz(quiz_id):
     quiz = db.get_or_404(Quiz, quiz_id)
     if QuizAttempt.query.filter_by(quiz_id=quiz_id).first():
         raise EventError("A quiz with attempts cannot change.")
+    if request.method == "DELETE":
+        if QRChallenge.query.filter_by(quiz_id=quiz_id).first():
+            raise EventError("Delete linked QR codes before deleting this question set.")
+        audit("QUIZ_DELETED", quiz_id)
+        db.session.delete(quiz)
+        db.session.commit()
+        return jsonify(ok=True)
     values = data()
+    if "title" in values:
+        title = str(values["title"]).strip()
+        if not title or len(title) > 120:
+            raise EventError("Question set title is required (120 characters maximum).", 400)
+        quiz.title = title
     if "active" in values:
         if not isinstance(values["active"], bool):
             raise EventError("Use a boolean value.", 400)
@@ -131,10 +143,20 @@ def desktops():
             raise EventError("Enter a station name, riddle, and password within the field limits.", 400)
         if Desktop.query.filter_by(name=name).first():
             raise EventError("Desktop name already exists.")
-        qr = QRChallenge(qr_id="DESKTOP-"+new_qr_token()[:12], secure_token=new_qr_token(),
-                         round_id=Round.query.filter_by(number=3).one().id,
-                         title=name, clue=clue, room=name, status="ACTIVE")
-        db.session.add(qr)
+        qr = None
+        if values.get("qr_id"):
+            qr = db.session.get(QRChallenge, integer(values["qr_id"], 1))
+            if not qr or qr.round.number != 3 or qr.status == "ARCHIVED" or Desktop.query.filter_by(qr_id=qr.id).first():
+                raise EventError("Select an available Round 3 QR.", 400)
+            if qr.scans:
+                raise EventError("A scanned QR cannot be assigned to a new desktop.")
+            qr.room = name
+            qr.status = "ACTIVE"
+        else:
+            qr = QRChallenge(qr_id="DESKTOP-"+new_qr_token()[:12], secure_token=new_qr_token(),
+                             round_id=Round.query.filter_by(number=3).one().id,
+                             title=name, clue=clue, room=name, status="ACTIVE")
+            db.session.add(qr)
         db.session.flush()
         desktop = Desktop(name=name, qr_id=qr.id)
         desktop.set_password(password)

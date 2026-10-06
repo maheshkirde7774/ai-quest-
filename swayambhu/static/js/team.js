@@ -2,7 +2,7 @@
   const csrf = document.querySelector('meta[name="csrf-token"]').content;
   const $ = id => document.getElementById(id);
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  let summary, cameraControls;
+  let summary, cameraControls, cameraReader, cameraStarting=false, scanHandled=false;
   const toast = (message,error=false) => {const node=document.createElement('div');node.className=`toast${error?' error':''}`;node.textContent=message;$('toast-root').append(node);setTimeout(()=>node.remove(),6000);};
   async function api(path,options={}) {
     const response=await fetch(path,{credentials:'same-origin',...options,headers:{'Content-Type':'application/json','X-CSRFToken':csrf}});
@@ -55,12 +55,24 @@
     }catch(e){toast(e.message,true);}finally{$('manual-scan').querySelector('button').disabled=false;}
   }
   if($('manual-scan'))$('manual-scan').onsubmit=e=>{e.preventDefault();submitToken($('token-input').value);};
+  function stopCamera(){cameraControls?.stop();cameraControls=null;$('camera-video').pause();$('camera-box').hidden=true;}
   if($('scan-open'))$('scan-open').onclick=async()=>{
-    if(!window.ZXingBrowser)return toast('Camera scanner unavailable. Paste the QR link.',true);
-    $('camera-box').hidden=false;
-    try{cameraControls=await new ZXingBrowser.BrowserMultiFormatReader().decodeFromVideoDevice(undefined,$('camera-video'),result=>{if(result){cameraControls?.stop();$('camera-box').hidden=true;submitToken(result.getText());}});}catch{$('camera-box').hidden=true;$('scan-fallback').open=true;toast('Camera access failed. Paste the QR link instead.',true);}
+    if(cameraStarting||cameraControls)return;
+    if(!window.isSecureContext||!navigator.mediaDevices?.getUserMedia){$('scan-fallback').open=true;return toast('Camera requires HTTPS or localhost. Use a QR link or secure event URL.',true);}
+    if(!window.ZXingBrowser?.BrowserMultiFormatReader){$('scan-fallback').open=true;return toast('Camera scanner unavailable. Paste the QR link.',true);}
+    cameraStarting=true;scanHandled=false;$('scan-open').disabled=true;$('camera-box').hidden=false;
+    try{
+      cameraReader=new ZXingBrowser.BrowserMultiFormatReader();
+      const onScan=result=>{if(!result||scanHandled)return;scanHandled=true;const value=result.getText();stopCamera();submitToken(value);};
+      // Prefer the rear camera on phones; browsers without it may use the default camera.
+      try{cameraControls=await cameraReader.decodeFromConstraints({audio:false,video:{facingMode:{ideal:'environment'}}},$('camera-video'),onScan);}
+      catch(error){if(error.name==='OverconstrainedError'||error.name==='NotFoundError')cameraControls=await cameraReader.decodeFromVideoDevice(undefined,$('camera-video'),onScan);else throw error;}
+      if(scanHandled)stopCamera();
+    }catch(error){stopCamera();$('scan-fallback').open=true;toast(error.name==='NotAllowedError'||error.name==='PermissionDeniedError'?'Camera permission was denied. Allow camera access in your browser settings or paste the QR link.':error.name==='NotFoundError'?'No camera was found on this device. Paste the QR link.':'Camera could not start. Close other camera apps or paste the QR link.',true);}
+    finally{cameraStarting=false;$('scan-open').disabled=false;}
   };
-  if($('stop-camera'))$('stop-camera').onclick=()=>{cameraControls?.stop();$('camera-box').hidden=true;};
+  if($('stop-camera'))$('stop-camera').onclick=stopCamera;
+  document.addEventListener('visibilitychange',()=>{if(document.hidden&&cameraControls)stopCamera();});
   async function renderChallenge(kind, box) {
     const result=await api(`/api/team/${kind}`);
     box.hidden=false;
