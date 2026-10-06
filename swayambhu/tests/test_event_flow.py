@@ -1,10 +1,11 @@
 """Critical event flows and security boundaries against isolated databases."""
 import unittest
+from datetime import timedelta
 from app import create_app
 from extensions import db, socketio
 from models import (ActivityLog, Admin, Answer, Batch, Desktop, DesktopSession, Event, FinalAnswer,
                     FinalAssignment, PasswordAttempt, QRChallenge, QRScanEvent, Question,
-                    Quiz, QuizAttempt, QuizQuestion, Round, RoundSession, Score, Team)
+                    Quiz, QuizAttempt, QuizQuestion, Round, RoundSession, Score, Team, utcnow)
 from routes.common import emit_leaderboard
 
 
@@ -70,6 +71,19 @@ class EventFlowTests(unittest.TestCase):
 
     def scan(self,token,client=None):
         return (client or self.team).post('/api/team/scan',json={'token':token})
+
+    def test_expired_qr_rejects_scan_and_logs_reason(self):
+        with self.app.app_context():
+            qr=db.session.get(QRChallenge,self.qr1)
+            qr.expires_at=utcnow()-timedelta(seconds=1)
+            db.session.commit()
+        self.team.post('/api/team/rounds/1/start',json={})
+        response=self.scan('round1-token')
+        self.assertEqual(response.status_code,409)
+        self.assertEqual(response.get_json()['status'],'EXPIRED')
+        self.assertIn('QR EXPIRED',response.get_json()['error'])
+        with self.app.app_context():
+            self.assertEqual(QRScanEvent.query.filter_by(status='EXPIRED').count(),1)
 
     def round1(self,client=None):
         client=client or self.team

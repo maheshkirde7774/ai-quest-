@@ -43,6 +43,44 @@ class EventAppTests(unittest.TestCase):
             "username": "operator", "password": "a-secure-test-password"
         })
 
+    def test_round_specific_qr_creation_and_question_sets(self):
+        self.login_admin()
+        from models import Question
+        with self.app.app_context():
+            db.session.add_all([Question(round_id=2, prompt=f"Question {index}", correct_answer="A",
+                                         option_a="A", option_b="B", option_c="C", option_d="D")
+                                for index in range(10)])
+            db.session.commit()
+            ids = [q.id for q in Question.query.filter_by(round_id=2).order_by(Question.id)]
+        created_set = self.client.post('/api/admin/quizzes', json={'title': 'AI Set', 'question_ids': ids})
+        self.assertEqual(created_set.status_code, 201, created_set.get_json())
+        quiz_id = created_set.get_json()['id']
+        self.assertEqual(self.client.patch(f'/api/admin/quizzes/{quiz_id}', json={'title': 'AI Set 01'}).status_code, 200)
+        expiry = (utcnow() + timedelta(days=1)).isoformat()
+        batch = self.client.post('/api/qrs', json={'round_id': 1, 'count': 3,
+                                                   'title': 'Hidden message', 'clue': 'Look near books',
+                                                   'expires_at': expiry})
+        self.assertEqual(batch.status_code, 201, batch.get_json())
+        self.assertEqual(len(batch.get_json()['qrs']), 3)
+        self.assertEqual(len({q['qr_id'] for q in batch.get_json()['qrs']}), 3)
+        round_two = self.client.post('/api/qrs', json={'round_id': 2, 'title': 'AI Challenge',
+                                                       'clue': 'Answer the questions', 'quiz_id': quiz_id,
+                                                       'expires_at': expiry})
+        self.assertEqual(round_two.status_code, 201, round_two.get_json())
+        self.assertEqual(round_two.get_json()['qr']['quiz_id'], quiz_id)
+        round_three = self.client.post('/api/qrs', json={'round_id': 3, 'title': 'Final Challenge',
+                                                         'clue': 'Find the password', 'expires_at': expiry})
+        self.assertEqual(round_three.status_code, 201, round_three.get_json())
+        self.assertIsNone(round_three.get_json()['qr']['quiz_id'])
+        desktop = self.client.post('/api/admin/desktops', json={'name': 'Station A',
+                                                                 'password': 'desktop-password',
+                                                                 'clue': 'Unlock the final challenge',
+                                                                 'qr_id': round_three.get_json()['qr']['id']})
+        self.assertEqual(desktop.status_code, 201, desktop.get_json())
+        self.assertEqual(desktop.get_json()['qr_id'], round_three.get_json()['qr']['id'])
+        self.assertEqual(self.client.delete(f'/api/admin/quizzes/{quiz_id}').status_code, 409)
+        self.assertEqual(self.client.post('/api/qrs', json={'round_id': 2, 'title': 'Missing set'}).status_code, 400)
+
     def create_team(self):
         response = self.client.post("/api/teams", json={"team_name": "Test Team", "member_1": "Alex"})
         self.assertEqual(response.status_code, 201)

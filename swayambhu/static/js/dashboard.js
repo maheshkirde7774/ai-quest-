@@ -184,7 +184,7 @@
     try {
       const term=document.getElementById('qr-search').value.toLowerCase();
       const rows = (await api('/api/qrs')).filter(qr=>`${qr.qr_id} ${qr.title} ${qr.room}`.toLowerCase().includes(term));
-      document.getElementById('qrs-table').innerHTML = rows.length ? rows.map(qr => `<tr><td class="team-cell">${esc(qr.qr_id)}</td><td>R${qr.round} · ${esc(qr.round_name)}</td><td>${esc(qr.room || 'Unassigned')}</td><td>${status(qr.status)}</td><td>${date(qr.created_at)}</td><td>${date(qr.activated_at)}</td><td>${qr.scans}</td><td><div class="row-actions"><button class="text-button" data-qr-image="${qr.id}">Download</button><button class="text-button" data-qr-scans="${qr.id}">Scans</button><button class="text-button" data-qr-action="${qr.status==='ACTIVE'?'deactivate':'activate'}" data-qr-id="${qr.id}">${qr.status==='ACTIVE'?'Deactivate':'Activate'}</button><button class="text-button danger-text" data-qr-action="delete" data-qr-id="${qr.id}">Archive</button></div></td></tr>`).join('') : '<tr><td colspan="8" class="empty-cell">Generate your first QR challenge.</td></tr>';
+      document.getElementById('qrs-table').innerHTML = rows.length ? rows.map(qr => `<tr><td class="team-cell">${esc(qr.qr_id)}</td><td>R${qr.round} · ${esc(qr.round_name)}</td><td>${esc(qr.room || 'Unassigned')}</td><td>${qr.expires_at && new Date(qr.expires_at) < new Date() ? status('EXPIRED') : status(qr.status)}</td><td>${date(qr.expires_at)}</td><td>${date(qr.created_at)}</td><td>${date(qr.activated_at)}</td><td>${qr.scans}</td><td><div class="row-actions"><button class="text-button" data-qr-image="${qr.id}">Download</button><button class="text-button" data-qr-scans="${qr.id}">Scans</button><button class="text-button" data-qr-action="${qr.status==='ACTIVE'?'deactivate':'activate'}" data-qr-id="${qr.id}">${qr.status==='ACTIVE'?'Deactivate':'Activate'}</button><button class="text-button danger-text" data-qr-action="delete" data-qr-id="${qr.id}">Archive</button></div></td></tr>`).join('') : '<tr><td colspan="9" class="empty-cell">Generate your first QR challenge.</td></tr>';
       rows.forEach(qr => {
         const controls = document.querySelector(`[data-qr-image="${qr.id}"]`)?.parentElement;
         if (!controls) return;
@@ -235,10 +235,81 @@
     } catch (error) { toast(error.message,true); }
   }
   document.getElementById('qr-search').oninput=loadQrs;
-  document.getElementById('add-qr').onclick = () => modal('Generate QR challenge',`<form id="qr-form" class="form-panel"><label>QR number · optional<input name="qr_number" maxlength="30" placeholder="QR-07"></label><label>Round<select name="round_id"><option value="1">Round 1 · QR Riddle</option><option value="2">Round 2 · Quiz</option><option value="3">Round 3 · Desktop</option></select></label><label>Title<input name="title" maxlength="120"></label><label>Clue<textarea name="clue" maxlength="2000"></textarea></label><label>Quiz<select name="quiz_id"><option value="">Select for Round 2</option></select></label><label>Room<input name="room" maxlength="120" placeholder="Room or location"></label><label>Question / clue<select name="question_id"><option value="">No attached clue</option></select></label><label>Expires at · optional<input name="expires_at" type="datetime-local"></label><p class="subtle">QR data is a unique random token; no answer is embedded.</p><button class="button primary" type="submit">Generate QR</button></form>`,async host=>{try{const quizzes=await api('/api/admin/quizzes');host.querySelector('[name=quiz_id]').innerHTML='<option value="">Select for Round 2</option>'+quizzes.map(q=>`<option value="${q.id}">${esc(q.title)}</option>`).join('');const questions=await api('/api/admin/questions');host.querySelector('[name=question_id]').innerHTML='<option value="">No attached clue</option>'+questions.map(q=>`<option value="${q.id}">R${q.round} · ${esc(q.prompt.slice(0,75))}</option>`).join('');}catch{} host.querySelector('#qr-form').onsubmit=async event=>{event.preventDefault();try{const payload=Object.fromEntries(new FormData(event.currentTarget));if(!payload.qr_number)delete payload.qr_number;if(payload.expires_at)payload.expires_at=new Date(payload.expires_at).toISOString();const data=await api('/api/qrs',{method:'POST',body:JSON.stringify(payload)});host.innerHTML='';showView('qrs');setTimeout(()=>{document.querySelector(`[data-qr-image="${data.qr.id}"]`)?.click();},150);toast(`${data.qr.qr_id} generated`);}catch(error){toast(error.message,true);}};});
+  document.getElementById('add-qr').onclick = () => modal('Create QR', `<form id="qr-form" class="form-panel"><label>Round<select name="round_id" required><option value="1">Round 1 · QR Riddle</option><option value="2">Round 2 · Quiz</option><option value="3">Round 3 · Desktop</option></select></label><label id="qr-count-field">Number of QR codes<input name="count" type="number" min="1" max="100" value="1" required></label><label>Title<input name="title" maxlength="120" required></label><label>Clue<textarea name="clue" maxlength="2000" required></textarea></label><div class="form-grid two"><label>Expiry date<input name="expiry_date" type="date" required></label><label>Expiry time<input name="expiry_time" type="time" required></label></div><div id="qr-quiz-field" hidden><label>Question set<select name="quiz_id"><option value="">Select a question set</option></select></label><p class="subtle">Create and manage Round 2 question sets in Questions.</p><button type="button" class="button secondary small" id="qr-open-questions">Manage question sets</button></div><details><summary>Additional event options</summary><label>Room / destination<input name="room" maxlength="120" placeholder="Optional location for route matching"></label><label>Attached question / clue<select name="question_id"><option value="">No attached question</option></select></label><label>QR number (single QR only)<input name="qr_number" maxlength="30" pattern="[A-Za-z0-9-]+" placeholder="Automatic if blank"></label></details><p class="subtle">QRs start inactive. Activate them when their round is ready. Round 3 QRs must also be assigned to an available desktop.</p><div class="button-row"><button type="button" class="button secondary" id="qr-cancel">Cancel</button><button class="button primary" type="submit" id="qr-submit">Generate QR codes</button></div></form>`,async host=>{
+    const form=host.querySelector('#qr-form'), round=form.elements.round_id;
+    let questions=[];
+    const update=()=>{
+      const number=Number(round.value);
+      host.querySelector('#qr-count-field').hidden=number!==1;
+      form.elements.count.disabled=number!==1;
+      host.querySelector('#qr-quiz-field').hidden=number!==2;
+      form.elements.quiz_id.disabled=number!==2;
+      form.elements.quiz_id.required=number===2;
+      form.elements.question_id.innerHTML='<option value="">No attached question</option>'+questions.filter(q=>q.round===number).map(q=>`<option value="${q.id}">${esc(q.prompt.slice(0,75))}</option>`).join('');
+    };
+    try{
+      const [quizzes,bank]=await Promise.all([api('/api/admin/quizzes'),api('/api/admin/questions')]);
+      questions=bank;
+      form.elements.quiz_id.innerHTML='<option value="">Select a question set</option>'+quizzes.filter(q=>q.active&&q.question_ids.length===10).map(q=>`<option value="${q.id}">${esc(q.title)} · 10 questions</option>`).join('');
+      update();
+    }catch(error){toast(error.message,true);}
+    round.onchange=update;
+    host.querySelector('#qr-cancel').onclick=()=>host.querySelector('.modal-close').click();
+    host.querySelector('#qr-open-questions').onclick=()=>{host.querySelector('.modal-close').click();showView('questions');};
+    form.onsubmit=async event=>{
+      event.preventDefault();const button=host.querySelector('#qr-submit');button.disabled=true;
+      try{
+        const payload=Object.fromEntries(new FormData(form));
+        payload.expires_at=new Date(`${payload.expiry_date}T${payload.expiry_time}`).toISOString();
+        delete payload.expiry_date;delete payload.expiry_time;
+        if(Number(payload.round_id)!==1)payload.count=1;
+        if(!payload.qr_number)delete payload.qr_number;
+        if(!payload.question_id)delete payload.question_id;
+        const data=await api('/api/qrs',{method:'POST',body:JSON.stringify(payload)});
+        host.querySelector('.modal-close').click();showView('qrs');
+        toast(`${data.qrs.length} QR code${data.qrs.length===1?'':'s'} generated`);
+        if(data.qrs.length===1)setTimeout(()=>document.querySelector(`[data-qr-image="${data.qr.id}"]`)?.click(),150);
+      }catch(error){toast(error.message,true);}finally{button.disabled=false;}
+    };
+  });
+  async function loadQuestionSets() {
+    const host=document.getElementById('question-sets');
+    if(!host)return;
+    try{
+      const [sets,questions]=await Promise.all([api('/api/admin/quizzes'),api('/api/admin/questions')]);
+      const candidates=questions.filter(q=>q.round===2&&q.active);
+      host.innerHTML=`<form id="set-form"><label>Set name<input name="title" required maxlength="120" placeholder="AI Challenge · Set 01"></label><fieldset class="quiz-picker"><legend>Select exactly ten questions</legend><div class="quiz-picker-list">${candidates.map(q=>`<label><input type="checkbox" name="question_ids" value="${q.id}"><span>${esc(q.prompt)}</span></label>`).join('')||'<p>Add active Round 2 questions first.</p>'}</div><p id="set-count" role="status">0 of 10 selected</p></fieldset><div class="button-row"><button class="button primary" id="set-save" disabled>Save question set</button><button type="button" class="button secondary" id="set-clear" hidden>Cancel edit</button></div></form><div class="question-list">${sets.map(set=>`<div class="question-row"><strong>${esc(set.title)}</strong><small>${set.question_ids.length} questions · ${set.active?'Active':'Inactive'} <button type="button" class="text-button" data-set-edit="${set.id}">Edit</button> <button type="button" class="text-button" data-set-toggle="${set.id}">${set.active?'Deactivate':'Activate'}</button> <button type="button" class="text-button danger-text" data-set-delete="${set.id}">Delete</button></small></div>`).join('')||'<p>No question sets saved yet.</p>'}</div>`;
+      const form=host.querySelector('#set-form'), checkboxes=[...form.querySelectorAll('[name=question_ids]')];
+      let editing=null;
+      const update=()=>{const count=checkboxes.filter(q=>q.checked).length;host.querySelector('#set-count').textContent=`${count} of 10 selected`;host.querySelector('#set-save').disabled=count!==10;checkboxes.forEach(q=>q.disabled=count===10&&!q.checked);};
+      form.onchange=update;
+      const clear=()=>{editing=null;form.reset();host.querySelector('#set-clear').hidden=true;host.querySelector('#set-save').textContent='Save question set';update();};
+      host.querySelector('#set-clear').onclick=clear;
+      host.querySelectorAll('[data-set-edit]').forEach(button=>button.onclick=()=>{
+        const set=sets.find(q=>q.id===Number(button.dataset.setEdit));editing=set.id;
+        form.elements.title.value=set.title;checkboxes.forEach(q=>q.checked=set.question_ids.includes(Number(q.value)));
+        host.querySelector('#set-clear').hidden=false;host.querySelector('#set-save').textContent='Save changes';update();form.scrollIntoView({block:'nearest'});
+      });
+      host.querySelectorAll('[data-set-toggle]').forEach(button=>button.onclick=async()=>{
+        const set=sets.find(q=>q.id===Number(button.dataset.setToggle));
+        try{await api(`/api/admin/quizzes/${set.id}`,{method:'PATCH',body:JSON.stringify({active:!set.active})});loadQuestionSets();}catch(error){toast(error.message,true);}
+      });
+      host.querySelectorAll('[data-set-delete]').forEach(button=>button.onclick=async()=>{
+        if(!confirm('Delete this question set?'))return;
+        try{await api(`/api/admin/quizzes/${button.dataset.setDelete}`,{method:'DELETE'});loadQuestionSets();}catch(error){toast(error.message,true);}
+      });
+      form.onsubmit=async event=>{
+        event.preventDefault();const title=form.elements.title.value.trim(),question_ids=checkboxes.filter(q=>q.checked).map(q=>Number(q.value));
+        if(question_ids.length!==10)return;
+        const button=host.querySelector('#set-save');button.disabled=true;
+        try{await api(editing?`/api/admin/quizzes/${editing}`:'/api/admin/quizzes',{method:editing?'PATCH':'POST',body:JSON.stringify({title,question_ids})});toast('Question set saved');loadQuestionSets();}catch(error){toast(error.message,true);button.disabled=false;}
+      };
+    }catch(error){host.textContent=error.message;}
+  }
   async function loadQuestions() {
     try {
       const rows = await api('/api/admin/questions');
+      loadQuestionSets();
       document.getElementById('questions-list').innerHTML = rows.length ? rows.map(q => `<div class="question-row"><strong>R${q.round} · ${esc(q.prompt)}</strong><small>${q.points} pts · ${q.time_limit}s · key ${esc(q.correct_answer)} <button class="text-button" data-question-edit="${q.id}">Edit</button> <button class="text-button" data-question-toggle="${q.id}" data-active="${q.active}">${q.active?'Deactivate':'Activate'}</button> <button class="text-button danger-text" data-question-delete="${q.id}">Delete</button></small></div>`).join('') : '<div class="empty-state">No questions added yet.</div>';
       document.querySelectorAll('[data-question-edit]').forEach(button => button.onclick = () => {
         const question = rows.find(item => item.id === Number(button.dataset.questionEdit));

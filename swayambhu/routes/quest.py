@@ -36,10 +36,10 @@ def scan_qr():
         status, message = "UNAUTHORIZED", "Team login required."
     elif not challenge:
         status, message = "INVALID", "This QR code is not recognized. Contact a coordinator."
+    elif challenge.expires_at and utcnow() > challenge.expires_at.replace(tzinfo=timezone.utc):
+        status, message = "EXPIRED", "QR EXPIRED — This challenge is no longer available."
     elif challenge.status != "ACTIVE":
         status, message = "INACTIVE", "This QR code is not active. Contact a coordinator."
-    elif challenge.expires_at and utcnow() > challenge.expires_at.replace(tzinfo=timezone.utc):
-        status, message = "INACTIVE", "This QR code has expired."
     elif ScanLog.query.filter_by(team_id=team.id, qr_id=challenge.id).first():
         status, message = "ALREADY_SCANNED", "Your team already scanned this QR. Your progress is saved on the dashboard."
     else:
